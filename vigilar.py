@@ -2,14 +2,20 @@
 """
 Vigilante de stock de PS5.
 
-Revisa las fichas de producto de productos.json y te avisa por Telegram y/o ntfy
-cuando un producto pasa a estar EN STOCK a un precio igual o menor que su precio_max.
+Hace dos cosas en cada pasada:
+  1. Lee los LISTADOS de consolas PS5 de varias tiendas y descubre solo las consolas y packs
+     (con juegos, mandos, saldo...) que haya, aunque sean nuevos.
+  2. Revisa cada ficha (las descubiertas + las fijas de productos.json) y te avisa por Telegram y/o
+     ntfy cuando una pasa a estar EN STOCK a un precio igual o menor que su máximo.
+
+Precio máximo de los packs descubiertos = precio oficial de la consola (digital / con lector)
++ X € por cada juego o mando extra + el saldo que incluya (todo configurable en productos.json).
 
 Uso:
   python vigilar.py                 una pasada (lo que ejecuta GitHub Actions)
-  python vigilar.py --probar        una pasada sin avisar ni guardar: imprime lo que detecta en cada tienda
+  python vigilar.py --probar        una pasada sin avisar ni guardar: imprime lo que detecta
   python vigilar.py --probar-aviso  manda un mensaje de prueba para comprobar Telegram/ntfy
-  python vigilar.py --resumen       además de vigilar, manda un resumen del estado de todas las tiendas
+  python vigilar.py --resumen       además de vigilar, manda un resumen del estado de todo
   python vigilar.py --bucle 120     en tu PC: repite cada ~120 segundos hasta que lo pares (Ctrl+C)
 
 Avisos (variables de entorno):
@@ -26,11 +32,14 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,7 +49,7 @@ BASE = Path(__file__).resolve().parent
 RUTA_PRODUCTOS = BASE / "productos.json"
 RUTA_ESTADO = BASE / "estado.json"
 
-# Tras cuántos fallos seguidos en un producto te aviso de que esa tienda no se está pudiendo vigilar
+# Tras cuántos fallos seguidos te aviso de que algo no se está pudiendo vigilar
 UMBRAL_FALLOS = 6
 
 EN_STOCK = "en_stock"
@@ -49,6 +58,9 @@ COLA = "cola"            # cola virtual (Queue-it): suele significar reposición
 DESCONOCIDO = "desconocido"
 ERROR = "error"
 
+REGLAS_POR_DEFECTO = {"digital": 599.99, "lector": 649.99, "pro": 899.99,
+                      "incluir_pro": False, "extra_por_juego_o_mando": 60}
+
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 CABECERAS = {
@@ -56,6 +68,13 @@ CABECERAS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "es-ES,es;q=0.9",
 }
+
+_print_lock = threading.Lock()
+
+
+def log(msg: str) -> None:
+    with _print_lock:
+        print(msg, flush=True)
 
 
 @dataclass
@@ -78,6 +97,11 @@ def sin_acentos(s: str) -> str:
 
 def normalizar_nombre(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", sin_acentos(s or ""))
+
+
+def normalizar_titulo(s: str) -> str:
+    s = sin_acentos(s or "").replace("®", "").replace("™", "").replace("\xa0", " ")
+    return re.sub(r"\s+", " ", s).strip()
 
 
 def a_precio(valor) -> Optional[float]:
@@ -122,11 +146,21 @@ def ahora_iso() -> str:
 def html_a_texto(html: str) -> str:
     html = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", html)
     texto = re.sub(r"(?s)<[^>]+>", " ", html)
-    return re.sub(r"\s+", " ", htmlmod.unescape(texto))
+    return re.sub(r"\s+", " ", htmlmod.unescape(texto)).strip()
+
+
+def limpiar_url(url: str) -> str:
+    p = urllib.parse.urlsplit(url.strip())
+    return urllib.parse.urlunsplit((p.scheme.lower(), p.netloc.lower(), p.path, "", ""))
+
+
+def dominio(url: str) -> str:
+    d = urllib.parse.urlsplit(url).netloc.lower()
+    return d[4:] if d.startswith("www.") else d
 
 
 # --------------------------------------------------------------------------------------
-# Lectura de la página: JSON-LD (schema.org) -> metaetiquetas -> texto visible
+# Lectura de una ficha: JSON-LD (schema.org) -> metaetiquetas -> texto visible
 # --------------------------------------------------------------------------------------
 
 RE_LDJSON = re.compile(
@@ -343,7 +377,7 @@ def leer_texto(texto: str, prod: dict) -> Lectura:
 
 SEÑALES_BLOQUEO = ["just a moment...", "cf-chl-", "access denied", "pardon our interruption",
                    "px-captcha", "_incapsula_resource", "request unsuccessful", "attention required!",
-                   "verify you are human", "are you a robot", "acceso denegado"]
+                   "verify you are human", "are you a robot", "acceso denegado", "captcha-delivery.com"]
 
 
 def parece_bloqueo(html: str) -> bool:
@@ -389,6 +423,158 @@ def analizar(status: int, html: str, url_final: str, prod: dict,
 
 
 # --------------------------------------------------------------------------------------
+# Listados: descubrir consolas y packs
+# --------------------------------------------------------------------------------------
+
+RE_ENLACE = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.I | re.S)
+RE_ALT = re.compile(r"\balt\s*=\s*[\"']([^\"']*)[\"']", re.I)
+
+RE_ACCESORIO_AL_INICIO = re.compile(
+    r"^(?:sony\s+|playstation\s+)?(?:mando|juego|videojuego|auricular|cascos|soporte|cargador|base\b|"
+    r"estacion|lector|unidad de disco|cubierta|carcasa|funda|disco|ssd|cable|volante|camara|tarjeta|"
+    r"playstation portal|ps portal|gafas|ps ?vr|kit\b|protector|skin|vinilo|ventilador|bolsa|maleta|"
+    r"mochila|dualsense|dualshock|teclado|raton|mini consola|codigo|suscripcion|playstation plus|ps plus|"
+    r"pegatina|adaptador|hub\b|memoria|wd_?black|seagate|samsung|nacon|razer|logitech|corsair)")
+PALABRAS_EXCLUIDAS = ("reacondicionad", "seminuevo", "usado", "segunda mano", "playstation portal",
+                      "ps portal", "vr2", "ps vr")
+RE_ES_CONSOLA = re.compile(
+    r"\bconsola\b|\bslim\b|chasis|chassis|edicion digital|digital edition|\bbundle\b|"
+    r"\bpack\s+(?:de\s+)?(?:consola\s+)?(?:ps5|playstation\s*5)|"
+    r"(?:ps5|playstation\s*5)\s+(?:digital|pro|estandar|standard)\b")
+
+
+def es_consola_ps5(titulo: str) -> bool:
+    t = normalizar_titulo(titulo)
+    if not re.search(r"playstation\s*5|\bps5\b", t):
+        return False
+    if RE_ACCESORIO_AL_INICIO.match(t):
+        return False
+    if any(x in t for x in PALABRAS_EXCLUIDAS):
+        return False
+    principal = _partes_pack(t)[0][1]
+    if re.search(r"\bpara\s+(?:la\s+|tu\s+|las\s+)?(?:consolas?|ps5|playstation)", principal):
+        return False  # "Soporte para consola PS5", "SSD para PS5"...
+    return bool(RE_ES_CONSOLA.search(principal))
+
+
+def _partes_pack(t: str) -> list[tuple[str, str]]:
+    """Divide 'consola + juego + 2 mandos' en [(sep, trozo)]; el primero es la consola."""
+    piezas = re.split(r"(\+|\s+con\s+|\s+y\s+(?=\d+\s*x?\s*mandos?))", t)
+    partes = [("", piezas[0].strip())]
+    for i in range(1, len(piezas) - 1, 2):
+        partes.append(("con" if "con" in piezas[i] else "+", piezas[i + 1].strip()))
+    return [p for p in partes if p[1]]
+
+
+def contar_extras(titulo: str) -> tuple[int, float]:
+    """(número de juegos/mandos extra, € de saldo incluido)."""
+    t = normalizar_titulo(titulo)
+    partes = _partes_pack(t)
+    principal = partes[0][1]
+    n, saldo = 0, 0.0
+    m = re.search(r"(\d+)\s*x?\s*mandos", principal)
+    if m and int(m.group(1)) > 1:
+        n += int(m.group(1)) - 1
+    for sep, trozo in partes[1:]:
+        if any(w in trozo for w in ("fortnite", "cosmetic", "avatar", "contenido descargable")):
+            continue
+        if any(w in trozo for w in ("tarjeta", "saldo", "ps plus", "playstation plus", "prepago", "psn")):
+            mm = re.search(r"(\d+)\s*(?:€|eur)", trozo)
+            saldo += float(mm.group(1)) if mm else 0.0
+            continue
+        if re.match(r"(?:\d+\s*x?\s*)?(?:mando|dualsense|lector|unidad de disco|1\s*mando)", trozo) and sep == "con":
+            mk = re.search(r"(\d+)\s*x?\s*(?:mandos?|dualsense)", trozo)
+            n += max(int(mk.group(1)) - 1, 0) if mk else 0
+            continue
+        mk = re.search(r"(\d+)\s*x?\s*(?:mandos?|dualsense)", trozo)
+        if mk or re.search(r"\bmando|\bdualsense", trozo):
+            k = int(mk.group(1)) if mk else 1
+            n += k - 1 if k >= 2 else 1
+            continue
+        n += 1
+    if n == 0 and saldo == 0 and len(partes) == 1 and \
+            re.search(r"edicion limitada|limited edition|\bbundle\b", principal) and "fortnite" not in principal:
+        n = 1
+    return n, saldo
+
+
+def precio_max_pack(titulo: str, reglas: dict) -> Optional[tuple[float, str]]:
+    """Precio máximo razonable para una consola/pack según su título. None = no vigilar (p. ej. Pro)."""
+    r = {**REGLAS_POR_DEFECTO, **(reglas or {})}
+    t = normalizar_titulo(titulo)
+    principal = _partes_pack(t)[0][1]
+    if re.search(r"\bpro\b", principal):
+        if not r["incluir_pro"]:
+            return None
+        base, tipo = float(r["pro"]), "PS5 Pro"
+    elif "digital" in principal or re.search(r"\b825\s*gb", principal):
+        base, tipo = float(r["digital"]), "PS5 Digital"
+    else:
+        base, tipo = float(r["lector"]), "PS5 con lector"
+    n, saldo = contar_extras(titulo)
+    extra = float(r["extra_por_juego_o_mando"])
+    total = round(base + n * extra + saldo, 2)
+    explicacion = f"{tipo} {euros(base)}"
+    if n:
+        explicacion += f" + {n} extra{'s' if n > 1 else ''} × {euros(extra)}"
+    if saldo:
+        explicacion += f" + saldo {euros(saldo)}"
+    return total, explicacion
+
+
+def extraer_enlaces(html: str, url_base: str) -> list[tuple[str, str]]:
+    pares = []
+    for attrs_txt, interior in RE_ENLACE.findall(html):
+        attrs = {k.lower(): htmlmod.unescape(v) for k, v in RE_ATRIBUTO.findall(attrs_txt)}
+        href = attrs.get("href", "")
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        texto = " ".join(x for x in (html_a_texto(interior), attrs.get("title", ""), attrs.get("aria-label", ""),
+                                     " ".join(RE_ALT.findall(interior))) if x)
+        pares.append((urllib.parse.urljoin(url_base, href), texto))
+    for nodo in _nodos_raiz(_cargar_ldjson(html)):
+        if "itemlist" in _tipos(nodo):
+            for el in _como_lista(nodo.get("itemListElement")):
+                if not isinstance(el, dict):
+                    continue
+                item = el.get("item") if isinstance(el.get("item"), dict) else el
+                url = item.get("url") or el.get("url") or (el.get("item") if isinstance(el.get("item"), str) else None)
+                if url:
+                    pares.append((urllib.parse.urljoin(url_base, url), item.get("name") or el.get("name") or ""))
+    return pares
+
+
+RE_URL_NO_PRODUCTO = re.compile(
+    r"/(?:list|category|categories|categorias|specials|buscar|search|searchresult|opiniones|reviews|marcas?|"
+    r"brand|campaign|ofertas|promociones)(?:/|$)|/c$|/c/", re.I)
+# precio de la tarjeta (>= 100 €): corta ahí el texto; no corta "Tarjeta 20€"
+RE_PRECIO_EN_TEXTO = re.compile(r"\s(?:desde\s)?(?:\d{1,3}(?:[.,]\d{3})+|\d{3,4})(?:[.,]\d{1,2})?\s?€")
+
+
+def limpiar_titulo(texto: str) -> str:
+    """Quita lo que acompaña al nombre en las tarjetas de producto (precio, opiniones, envío...)."""
+    texto = re.sub(r"\s+", " ", texto or "").strip()
+    return RE_PRECIO_EN_TEXTO.split(" " + texto)[0].strip()
+
+
+def consolas_del_listado(pares: list[tuple[str, str]], url_listado: str, maximo: int) -> list[tuple[str, str]]:
+    dom = dominio(url_listado)
+    listado_limpio = limpiar_url(url_listado)
+    titulos: "OrderedDict[str, str]" = OrderedDict()
+    for url, texto in pares:
+        if not url.startswith("http") or dominio(url) != dom:
+            continue
+        u = limpiar_url(url)
+        if u == listado_limpio or RE_URL_NO_PRODUCTO.search(urllib.parse.urlsplit(u).path):
+            continue
+        texto = limpiar_titulo(texto)
+        if u not in titulos or len(texto) > len(titulos[u]):
+            titulos[u] = texto
+    elegidos = [(u, t[:200]) for u, t in titulos.items() if t and es_consola_ps5(t)]
+    return elegidos[:maximo]
+
+
+# --------------------------------------------------------------------------------------
 # Descarga
 # --------------------------------------------------------------------------------------
 
@@ -407,6 +593,11 @@ def descargar_http(url: str, timeout: int = 25) -> tuple[int, str, str]:
             return resp.status, resp.read().decode("utf-8", "replace"), resp.geturl()
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode("utf-8", "replace"), url
+
+
+JS_ENLACES = """() => Array.from(document.querySelectorAll('a[href]')).map(a => [a.href,
+  [(a.innerText || ''), a.getAttribute('title') || '', a.getAttribute('aria-label') || '',
+   Array.from(a.querySelectorAll('img[alt]')).map(i => i.alt).join(' ')].join(' ')])"""
 
 
 class Navegador:
@@ -432,20 +623,36 @@ class Navegador:
             self.motivo = f"{type(e).__name__}: {e}"[:200]
         return self.disponible
 
-    def descargar(self, url: str, timeout: int = 45) -> tuple[int, str, str, str]:
+    def _abrir(self, url: str, timeout: int, desplazar: bool):
         if not self.arrancar():
             raise RuntimeError(f"navegador no disponible ({self.motivo})")
         ctx = self._browser.new_context(locale="es-ES", user_agent=UA,
                                         viewport={"width": 1366, "height": 900})
         pagina = ctx.new_page()
+        resp = pagina.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
         try:
-            resp = pagina.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
-            try:
-                pagina.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:  # noqa: BLE001
-                pass
-            pagina.wait_for_timeout(2500)
-            return (resp.status if resp else 0), pagina.content(), pagina.inner_text("body"), pagina.url
+            pagina.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:  # noqa: BLE001
+            pass
+        if desplazar:
+            for _ in range(4):
+                pagina.mouse.wheel(0, 2500)
+                pagina.wait_for_timeout(700)
+        pagina.wait_for_timeout(2000)
+        return ctx, pagina, (resp.status if resp else 0)
+
+    def descargar(self, url: str, timeout: int = 45) -> tuple[int, str, str, str]:
+        ctx, pagina, status = self._abrir(url, timeout, desplazar=False)
+        try:
+            return status, pagina.content(), pagina.inner_text("body"), pagina.url
+        finally:
+            ctx.close()
+
+    def descargar_enlaces(self, url: str, timeout: int = 45) -> tuple[int, str, str, list]:
+        ctx, pagina, status = self._abrir(url, timeout, desplazar=True)
+        try:
+            enlaces = [tuple(x) for x in pagina.evaluate(JS_ENLACES)]
+            return status, pagina.content(), pagina.url, enlaces
         finally:
             ctx.close()
 
@@ -459,51 +666,145 @@ class Navegador:
             pass
 
 
-def revisar(prod: dict, nav: Optional[Navegador]) -> Lectura:
-    url = prod["url"]
+def revisar_http(prod: dict) -> Lectura:
     try:
-        if prod.get("modo") == "navegador":
-            if nav is None:
-                return Lectura(ERROR, metodo="navegador", detalle="navegador desactivado")
-            status, html, texto, final = nav.descargar(url)
-            return analizar(status, html, final, prod, texto, "navegador")
-
-        status, html, final = descargar_http(url)
-        lectura = analizar(status, html, final, prod, None, "http")
-        if (lectura.estado in (ERROR, DESCONOCIDO) and nav is not None
-                and prod.get("reintentar_con_navegador", True) and status != 404 and nav.arrancar()):
-            try:
-                status2, html2, texto2, final2 = nav.descargar(url)
-                segunda = analizar(status2, html2, final2, prod, texto2, "navegador")
-                if segunda.estado in (EN_STOCK, AGOTADO, COLA):
-                    return segunda
-            except Exception:  # noqa: BLE001
-                pass
-        return lectura
+        status, html, final = descargar_http(prod["url"])
+        return analizar(status, html, final, prod, None, "http")
     except Exception as e:  # noqa: BLE001
-        return Lectura(ERROR, metodo=prod.get("modo", "http"), detalle=f"{type(e).__name__}: {e}"[:200])
+        return Lectura(ERROR, metodo="http", detalle=f"{type(e).__name__}: {e}"[:200])
+
+
+def revisar_navegador(prod: dict, nav: Optional[Navegador]) -> Lectura:
+    if nav is None:
+        return Lectura(ERROR, metodo="navegador", detalle="navegador desactivado")
+    try:
+        status, html, texto, final = nav.descargar(prod["url"])
+        return analizar(status, html, final, prod, texto, "navegador")
+    except Exception as e:  # noqa: BLE001
+        return Lectura(ERROR, metodo="navegador", detalle=f"{type(e).__name__}: {e}"[:200])
+
+
+def revisar(prod: dict, nav: Optional[Navegador]) -> Lectura:
+    """Revisa una ficha: http y, si no sale nada claro, navegador."""
+    if prod.get("modo") == "navegador":
+        return revisar_navegador(prod, nav)
+    lectura = revisar_http(prod)
+    if (lectura.estado in (ERROR, DESCONOCIDO) and nav is not None
+            and prod.get("reintentar_con_navegador", True) and "404" not in lectura.detalle and nav.arrancar()):
+        segunda = revisar_navegador(prod, nav)
+        if segunda.estado in (EN_STOCK, AGOTADO, COLA):
+            return segunda
+    return lectura
+
+
+def revisar_todos(productos: list[dict], nav: Optional[Navegador], pausa) -> list[tuple[dict, Lectura]]:
+    """Fase 1: http en paralelo (una cola por tienda). Fase 2: navegador, uno a uno."""
+    lecturas: dict[int, Lectura] = {}
+    por_tienda = defaultdict(list)
+    for i, p in enumerate(productos):
+        if p.get("modo") != "navegador":
+            por_tienda[dominio(p["url"])].append(i)
+
+    def trabajar(indices):
+        for k, i in enumerate(indices):
+            if k and pausa:
+                time.sleep(random.uniform(*pausa))
+            lecturas[i] = revisar_http(productos[i])
+
+    if por_tienda:
+        with ThreadPoolExecutor(max_workers=min(8, len(por_tienda))) as ex:
+            list(ex.map(trabajar, por_tienda.values()))
+
+    tiendas_que_fallan_en_navegador = set()
+    for i, p in enumerate(productos):
+        if p.get("modo") == "navegador":
+            lecturas[i] = revisar_navegador(p, nav)
+            continue
+        l = lecturas[i]
+        dom = dominio(p["url"])
+        if (l.estado in (ERROR, DESCONOCIDO) and nav is not None and dom not in tiendas_que_fallan_en_navegador
+                and p.get("reintentar_con_navegador", True) and "404" not in l.detalle and nav.arrancar()):
+            segunda = revisar_navegador(p, nav)
+            if segunda.estado in (EN_STOCK, AGOTADO, COLA):
+                lecturas[i] = segunda
+            else:
+                tiendas_que_fallan_en_navegador.add(dom)  # no insistir con esa tienda en esta pasada
+    return [(p, lecturas[i]) for i, p in enumerate(productos)]
+
+
+def descubrir_listados(listados: list[dict], nav: Optional[Navegador]) -> dict[str, tuple[list, str]]:
+    """Devuelve {url_listado: ([(url, titulo)], detalle_error)}."""
+    resultado: dict[str, tuple[list, str]] = {}
+
+    def por_http(lst):
+        url = lst["url"]
+        try:
+            status, html, final = descargar_http(url)
+            if status >= 400 or (parece_bloqueo(html) and "<a" not in html[:200000].lower()):
+                return url, [], f"HTTP {status}" + (" (bloqueo)" if parece_bloqueo(html) else "")
+            return url, consolas_del_listado(extraer_enlaces(html, final), url, lst.get("max_productos", 25)), ""
+        except Exception as e:  # noqa: BLE001
+            return url, [], f"{type(e).__name__}: {e}"[:150]
+
+    http = [l for l in listados if l.get("modo") != "navegador"]
+    if http:
+        with ThreadPoolExecutor(max_workers=min(8, len(http))) as ex:
+            for url, items, detalle in ex.map(por_http, http):
+                resultado[url] = (items, detalle)
+
+    for lst in listados:
+        url = lst["url"]
+        items, detalle = resultado.get(url, ([], ""))
+        if items or nav is None or not lst.get("navegador_si_falla", True) or not nav.arrancar():
+            resultado[url] = (items, detalle or ("" if items else "no encuentro consolas en el listado"))
+            continue
+        try:
+            status, html, final, enlaces = nav.descargar_enlaces(url)
+            items = consolas_del_listado(list(enlaces) + extraer_enlaces(html, final), url,
+                                         lst.get("max_productos", 25))
+            resultado[url] = (items, "" if items else f"no encuentro consolas en el listado (HTTP {status})")
+        except Exception as e:  # noqa: BLE001
+            resultado[url] = ([], detalle or f"{type(e).__name__}: {e}"[:150])
+    return resultado
 
 
 # --------------------------------------------------------------------------------------
 # Avisos
 # --------------------------------------------------------------------------------------
 
+def trocear(texto: str, maximo: int = 3900) -> list[str]:
+    trozos, actual = [], ""
+    for linea in texto.split("\n"):
+        while len(linea) > maximo:
+            trozos.append(linea[:maximo])
+            linea = linea[maximo:]
+        if len(actual) + len(linea) + 1 > maximo:
+            trozos.append(actual)
+            actual = linea
+        else:
+            actual = f"{actual}\n{linea}" if actual else linea
+    if actual:
+        trozos.append(actual)
+    return trozos
+
+
 def enviar_aviso(texto: str, titulo: str = "Vigilante PS5", url: Optional[str] = None,
                  urgente: bool = False) -> bool:
     enviado = False
     token, chat = os.getenv("TELEGRAM_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
     if token and chat:
-        datos = urllib.parse.urlencode({"chat_id": chat, "text": texto,
-                                        "disable_web_page_preview": "true"}).encode()
         try:
-            urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=datos, timeout=20)
+            for trozo in trocear(texto):
+                datos = urllib.parse.urlencode({"chat_id": chat, "text": trozo,
+                                                "disable_web_page_preview": "true"}).encode()
+                urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=datos, timeout=20)
             enviado = True
         except Exception as e:  # noqa: BLE001
-            print(f"  ! Telegram falló: {e}")
+            log(f"  ! Telegram falló: {e}")
     tema = os.getenv("NTFY_TOPIC")
     if tema:
         servidor = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
-        cuerpo = {"topic": tema, "title": titulo, "message": texto, "priority": 5 if urgente else 3,
+        cuerpo = {"topic": tema, "title": titulo, "message": texto[:3900], "priority": 5 if urgente else 3,
                   "tags": ["video_game"]}
         if url:
             cuerpo["click"] = url
@@ -513,15 +814,17 @@ def enviar_aviso(texto: str, titulo: str = "Vigilante PS5", url: Optional[str] =
             urllib.request.urlopen(peticion, timeout=20)
             enviado = True
         except Exception as e:  # noqa: BLE001
-            print(f"  ! ntfy falló: {e}")
+            log(f"  ! ntfy falló: {e}")
     if not enviado:
-        print(f"  [aviso sin enviar: no hay Telegram ni ntfy configurado]\n{texto}")
+        log(f"  [aviso sin enviar: no hay Telegram ni ntfy configurado]\n{texto}")
     return enviado
 
 
 def mensaje_stock(prod: dict, l: Lectura) -> str:
     lineas = [f"🟢 PS5 EN STOCK en {prod['tienda']}",
               f"{prod['nombre']}: {euros(l.precio)} (tu máximo: {euros(float(prod['precio_max']))})"]
+    if prod.get("regla"):
+        lineas.append(f"Máximo calculado: {prod['regla']}")
     if l.vendedor:
         lineas.append(f"Vendedor: {l.vendedor}")
     if l.detalle:
@@ -539,18 +842,20 @@ def mensaje_cola(prod: dict) -> str:
 
 def mensaje_fallos(prod: dict, l: Lectura) -> str:
     return (f"⚠️ No consigo vigilar {prod['tienda']} · {prod['nombre']} ({l.detalle or l.estado}).\n"
-            f"Mientras tanto esa tienda NO está vigilada. Si sigue así, prueba a ejecutarlo en tu PC "
+            f"Mientras tanto esa ficha NO está vigilada. Si sigue así, prueba a ejecutarlo en tu PC "
             f"(python vigilar.py --bucle 120) o revisa la URL:\n{prod['url']}")
 
 
-def procesar_lectura(prod: dict, l: Lectura, estado: dict, avisar: Callable[..., bool]) -> None:
+def procesar_lectura(prod: dict, l: Lectura, estado: dict, avisar: Callable[..., bool],
+                     silenciar_fallos: bool = False) -> None:
     e = estado.setdefault(prod["url"], {"ok": False, "cola": False, "fallos": 0, "aviso_fallos": False})
     precio_max = float(prod.get("precio_max") or 10**9)
 
     if l.estado in (ERROR, DESCONOCIDO):
         e["fallos"] = e.get("fallos", 0) + 1
-        if e["fallos"] >= UMBRAL_FALLOS and not e.get("aviso_fallos"):
-            avisar(mensaje_fallos(prod, l), titulo="Vigilante PS5: tienda sin vigilar", url=prod["url"])
+        if (e["fallos"] >= UMBRAL_FALLOS and not e.get("aviso_fallos") and not silenciar_fallos
+                and not prod.get("descubierto") and not prod.get("experimental")):
+            avisar(mensaje_fallos(prod, l), titulo="Vigilante PS5: ficha sin vigilar", url=prod["url"])
             e["aviso_fallos"] = True
     else:
         e["fallos"] = 0
@@ -567,16 +872,104 @@ def procesar_lectura(prod: dict, l: Lectura, estado: dict, avisar: Callable[...,
     e["ultimo"] = {"estado": l.estado, "precio": l.precio, "detalle": l.detalle, "hora": ahora_iso()}
 
 
+def procesar_listado(lst: dict, items: list, detalle: str, estado: dict, avisar) -> list:
+    """Guarda lo descubierto y, si el listado falla, reutiliza lo último conocido."""
+    todos = estado.setdefault("_listados", {})
+    e = todos.setdefault(lst["url"], {"productos": [], "fallos": 0, "aviso_fallos": False})
+    if items:
+        e.update(productos=[list(x) for x in items], fallos=0, aviso_fallos=False, ultimo_ok=ahora_iso())
+        return items
+    e["fallos"] = e.get("fallos", 0) + 1
+    e["detalle"] = detalle
+    if avisar:
+        avisar_listado_caido(lst, estado, avisar)
+    return [tuple(x) for x in e.get("productos", [])]
+
+
+def avisar_listado_caido(lst: dict, estado: dict, avisar) -> None:
+    e = estado.get("_listados", {}).get(lst["url"], {})
+    if e.get("fallos", 0) >= UMBRAL_FALLOS and not e.get("aviso_fallos") and not lst.get("experimental"):
+        conocidos = len(e.get("productos", []))
+        avisar(f"⚠️ No consigo leer el listado de {lst['tienda']} ({e.get('detalle', '')}).\n"
+               f"Sigo vigilando las {conocidos} consolas/packs que ya conocía, pero no detectaré packs nuevos "
+               f"de esa tienda hasta que vuelva a funcionar.\n{lst['url']}",
+               titulo="Vigilante PS5: listado sin leer", url=lst["url"])
+        e["aviso_fallos"] = True
+
+
+# --------------------------------------------------------------------------------------
+# Tiendas que bloquean: un solo aviso por tienda y pausa
+# --------------------------------------------------------------------------------------
+
+PAUSA_TIENDA_BLOQUEADA_MIN = 30
+
+
+def lugar() -> str:
+    return "GitHub" if os.getenv("GITHUB_ACTIONS") == "true" else "este ordenador"
+
+
+def tiendas_en_pausa(estado: dict, ahora: Optional[float] = None) -> set:
+    ahora = time.time() if ahora is None else ahora
+    return {t for t, e in estado.get("_tiendas", {}).items()
+            if e.get("bloqueada") and e.get("siguiente", 0) > ahora}
+
+
+def actualizar_tiendas(resultados: list, info_listados: list, estado: dict, avisar,
+                       ahora: Optional[float] = None) -> set:
+    """Marca las tiendas que no responden en nada. Devuelve las que están caídas en esta pasada."""
+    ahora = time.time() if ahora is None else ahora
+    lecturas_ok = defaultdict(list)
+    solo_experimental = defaultdict(lambda: True)
+    for p, l in resultados:
+        lecturas_ok[p["tienda"]].append(l.estado in (EN_STOCK, AGOTADO, COLA))
+        solo_experimental[p["tienda"]] &= bool(p.get("experimental") or p.get("descubierto"))
+    for lst, n, _ in info_listados:
+        lecturas_ok[lst["tienda"]].append(n > 0)
+        solo_experimental[lst["tienda"]] &= bool(lst.get("experimental"))
+
+    caidas = set()
+    tiendas = estado.setdefault("_tiendas", {})
+    for tienda, oks in lecturas_ok.items():
+        e = tiendas.setdefault(tienda, {"fallos": 0, "bloqueada": False})
+        if any(oks):
+            if e.get("bloqueada") and avisar:
+                avisar(f"✅ {tienda} vuelve a responder desde {lugar()}: la vuelvo a vigilar.",
+                       titulo=f"{tienda} vuelve a funcionar")
+            e.update(fallos=0, bloqueada=False, siguiente=0)
+            continue
+        caidas.add(tienda)
+        e["fallos"] = e.get("fallos", 0) + 1
+        if e["fallos"] >= UMBRAL_FALLOS:
+            if not e.get("bloqueada") and avisar and not solo_experimental[tienda]:
+                donde = "GitHub" if lugar() == "GitHub" else "tu PC"
+                consejo = ("Desde tu PC suele funcionar: abre vigilar_en_pc.bat (lo explica el README)."
+                           if donde == "GitHub" else "Prueba más tarde o desde otra conexión.")
+                avisar(f"⚠️ {tienda} bloquea las consultas desde {donde}, así que desde aquí NO se está vigilando.\n"
+                       f"Lo reintentaré cada {PAUSA_TIENDA_BLOQUEADA_MIN} minutos y te aviso si vuelve a funcionar.\n"
+                       f"{consejo}", titulo=f"{tienda} sin vigilar")
+            e["bloqueada"] = True
+            e["siguiente"] = ahora + PAUSA_TIENDA_BLOQUEADA_MIN * 60
+    return caidas
+
+
+# --------------------------------------------------------------------------------------
+# Resumen
+# --------------------------------------------------------------------------------------
+
+def _supera_maximo(prod: dict, l: Lectura) -> bool:
+    return l.precio is not None and l.precio > float(prod["precio_max"]) + 0.005
+
+
 def icono(prod: dict, l: Lectura) -> str:
     if l.estado == EN_STOCK:
-        return "🟢" if l.precio is None or l.precio <= float(prod["precio_max"]) + 0.005 else "🟠"
+        return "🟠" if _supera_maximo(prod, l) else "🟢"
     return {AGOTADO: "🔴", COLA: "🟡", ERROR: "⚠️"}.get(l.estado, "❔")
 
 
 def descripcion(prod: dict, l: Lectura) -> str:
     if l.estado == EN_STOCK:
-        if l.precio is not None and l.precio > float(prod["precio_max"]) + 0.005:
-            return f"en stock pero a {euros(l.precio)} (por encima de tu máximo)"
+        if _supera_maximo(prod, l):
+            return f"en stock pero a {euros(l.precio)} (tu máximo: {euros(float(prod['precio_max']))})"
         return f"EN STOCK a {euros(l.precio)}"
     if l.estado == AGOTADO:
         return "agotado" + (f" ({l.detalle})" if l.detalle else "")
@@ -587,13 +980,41 @@ def descripcion(prod: dict, l: Lectura) -> str:
     return f"no se pudo leer: {l.detalle}"
 
 
-def resumen(resultados: list[tuple[dict, Lectura]]) -> str:
-    lineas = [f"📋 Vigilante PS5: estado de {len(resultados)} productos"]
-    for prod, l in resultados:
-        lineas.append(f"{icono(prod, l)} {prod['tienda']} · {prod['nombre']}: {descripcion(prod, l)}")
+def resumen(resultados: list[tuple[dict, Lectura]], info_listados: Optional[list] = None,
+            pausadas: Optional[set] = None) -> str:
+    fijos = [(p, l) for p, l in resultados if not p.get("descubierto")]
+    descubiertos = [(p, l) for p, l in resultados if p.get("descubierto")]
+    lineas = [f"📋 Vigilante PS5 ({lugar()}): {len(resultados)} consolas y packs vigilados"]
+    for tienda in sorted(pausadas or []):
+        lineas.append(f"⏸ {tienda}: bloquea las consultas desde {lugar()}; la reintento cada "
+                      f"{PAUSA_TIENDA_BLOQUEADA_MIN} min")
+    if fijos:
+        lineas.append("\nFichas fijas:")
+        for prod, l in fijos:
+            lineas.append(f"{icono(prod, l)} {prod['tienda']} · {prod['nombre']}: {descripcion(prod, l)}")
+    if info_listados:
+        lineas.append("\nListados (detecta packs nuevos solos):")
+        por_listado = defaultdict(list)
+        for p, l in descubiertos:
+            por_listado[p.get("listado")].append((p, l))
+        for lst, n_items, detalle in info_listados:
+            grupo = por_listado.get(lst["url"], [])
+            if not n_items:
+                marca = "❔" if lst.get("experimental") else "⚠️"
+                lineas.append(f"{marca} {lst['tienda']}: no se pudo leer el listado ({detalle})")
+                continue
+            cuenta = defaultdict(int)
+            for p, l in grupo:
+                cuenta[icono(p, l)] += 1
+            detalle_cuenta = " · ".join(f"{k} {v}" for k, v in sorted(cuenta.items())) or "repetidos en otro listado"
+            lineas.append(f"🔎 {lst['tienda']}: {n_items} consolas/packs ({detalle_cuenta})")
+        for p, l in descubiertos:
+            if l.estado == EN_STOCK:
+                lineas.append(f"   {icono(p, l)} {p['nombre']}: {descripcion(p, l)}")
     vigiladas = sum(1 for _, l in resultados if l.estado in (EN_STOCK, AGOTADO, COLA))
-    lineas.append(f"\nVigilando bien {vigiladas} de {len(resultados)}. "
-                  "Te aviso cuando alguno pase a estar en stock a tu precio máximo o menos.")
+    lineas.append(f"\nLeyendo bien {vigiladas} de {len(resultados)}. "
+                  "🟢 en stock a tu precio · 🟠 en stock pero caro · 🔴 agotado · ⚠️/❔ no se pudo leer. "
+                  "Te aviso cuando alguno pase a 🟢.")
     return "\n".join(lineas)
 
 
@@ -601,10 +1022,11 @@ def escribir_resumen_github(resultados: list[tuple[dict, Lectura]]) -> None:
     ruta = os.getenv("GITHUB_STEP_SUMMARY")
     if not ruta:
         return
-    filas = ["| | Tienda | Producto | Estado | Método |", "|---|---|---|---|---|"]
+    filas = ["| | Tienda | Producto | Máximo | Estado | Método |", "|---|---|---|---|---|---|"]
     for prod, l in resultados:
-        filas.append(f"| {icono(prod, l)} | {prod['tienda']} | [{prod['nombre']}]({prod['url']}) | "
-                     f"{descripcion(prod, l)} | {l.metodo} |")
+        nombre = prod["nombre"].replace("|", "/")
+        filas.append(f"| {icono(prod, l)} | {prod['tienda']} | [{nombre}]({prod['url']}) | "
+                     f"{euros(float(prod['precio_max']))} | {descripcion(prod, l).replace('|', '/')} | {l.metodo} |")
     with open(ruta, "a", encoding="utf-8") as f:
         f.write("\n".join(filas) + "\n")
 
@@ -613,18 +1035,24 @@ def escribir_resumen_github(resultados: list[tuple[dict, Lectura]]) -> None:
 # Programa
 # --------------------------------------------------------------------------------------
 
-def cargar_productos() -> list[dict]:
+def _url_valida(u) -> bool:
+    return str(u or "").startswith("http")
+
+
+def cargar_config() -> dict:
     datos = json.loads(RUTA_PRODUCTOS.read_text(encoding="utf-8"))
     productos = []
     for p in datos.get("productos", []):
         if not p.get("activo", True):
             continue
-        if not str(p.get("url", "")).startswith("http"):
-            print(f"  (salto {p.get('tienda')} · {p.get('nombre')}: falta la URL)")
+        if not _url_valida(p.get("url")):
+            log(f"  (salto {p.get('tienda')} · {p.get('nombre')}: falta la URL)")
             continue
         p.setdefault("precio_max", 10**9)
         productos.append(p)
-    return productos
+    listados = [l for l in datos.get("listados", []) if l.get("activo", True) and _url_valida(l.get("url"))]
+    reglas = {**REGLAS_POR_DEFECTO, **datos.get("reglas_packs", {})}
+    return {"productos": productos, "listados": listados, "reglas": reglas}
 
 
 def cargar_estado() -> dict:
@@ -638,26 +1066,102 @@ def guardar_estado(estado: dict) -> None:
     RUTA_ESTADO.write_text(json.dumps(estado, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def productos_descubiertos(lst: dict, items: list, reglas: dict) -> list[dict]:
+    salida = []
+    for url, titulo in items:
+        calculo = precio_max_pack(titulo, reglas)
+        if calculo is None:
+            continue
+        precio_max, regla = calculo
+        nombre = re.sub(r"\s+", " ", titulo).strip()
+        salida.append({
+            "tienda": lst["tienda"], "nombre": nombre[:90] + ("…" if len(nombre) > 90 else ""), "url": url,
+            "precio_max": precio_max, "regla": regla, "vendedor": lst.get("vendedor", ""),
+            "modo": lst.get("modo_productos", "http"), "fuente": lst.get("fuente_productos", "auto"),
+            "reintentar_con_navegador": lst.get("navegador_en_fichas", True), "descubierto": True,
+            "listado": lst["url"],
+        })
+    return salida
+
+
 def pasada(args, nav: Optional[Navegador], avisar=enviar_aviso, pausa=(1.5, 4.0)) -> list:
-    productos = cargar_productos()
+    cfg = cargar_config()
     primera_vez = not RUTA_ESTADO.exists()
     estado = cargar_estado()
-    resultados = []
-    print(f"[{ahora_iso()}] Revisando {len(productos)} productos")
-    for i, prod in enumerate(productos):
-        if i and pausa:
-            time.sleep(random.uniform(*pausa))
-        l = revisar(prod, nav)
-        resultados.append((prod, l))
-        print(f"  {icono(prod, l)} {prod['tienda']:<15} {prod['nombre']:<28} {descripcion(prod, l)}  [{l.metodo}]")
-        if not args.probar:
-            procesar_lectura(prod, l, estado, avisar)
+
+    # Tiendas que nos tienen bloqueados: se saltan hasta su siguiente reintento
+    pausadas = set() if args.probar else tiendas_en_pausa(estado)
+    if pausadas:
+        log(f"[{ahora_iso()}] En pausa por bloqueo: {', '.join(sorted(pausadas))}")
+    listados = [l for l in cfg["listados"] if l["tienda"] not in pausadas]
+
+    # 1) Listados -> consolas y packs descubiertos
+    productos = [p for p in cfg["productos"] if p["tienda"] not in pausadas]
+    vistas = {limpiar_url(p["url"]) for p in productos}
+    info_listados = []
+    if listados:
+        log(f"[{ahora_iso()}] Leyendo {len(listados)} listados")
+        encontrados = descubrir_listados(listados, nav)
+        for lst in listados:
+            items, detalle = encontrados.get(lst["url"], ([], "sin respuesta"))
+            usados = items if args.probar else procesar_listado(lst, items, detalle, estado, None)
+            info_listados.append((lst, len(items), detalle))
+            log(f"  🔎 {lst['tienda']:<15} {len(items)} consolas/packs en el listado"
+                + (f"  ({detalle})" if detalle else ""))
+            for prod in productos_descubiertos(lst, usados, cfg["reglas"]):
+                clave = limpiar_url(prod["url"])
+                if clave not in vistas:
+                    vistas.add(clave)
+                    productos.append(prod)
+
+    # 2) Fichas
+    log(f"[{ahora_iso()}] Revisando {len(productos)} fichas")
+    resultados = revisar_todos(productos, nav, pausa)
+    for prod, l in resultados:
+        log(f"  {icono(prod, l)} {prod['tienda']:<15} {prod['nombre'][:60]:<60} {descripcion(prod, l)}  [{l.metodo}]")
+
     if not args.probar:
+        # 3) Avisos: primero por tienda (una tienda entera bloqueada = un solo aviso), luego por ficha
+        caidas = actualizar_tiendas(resultados, info_listados, estado, avisar)
+        for prod, l in resultados:
+            procesar_lectura(prod, l, estado, avisar, silenciar_fallos=prod["tienda"] in caidas)
+        for lst, n, _ in info_listados:
+            if not n and lst["tienda"] not in caidas:
+                avisar_listado_caido(lst, estado, avisar)
         if primera_vez or args.resumen:
-            avisar(resumen(resultados), titulo="Vigilante PS5: resumen")
+            avisar(resumen(resultados, info_listados, pausadas), titulo="Vigilante PS5: resumen")
         guardar_estado(estado)
+    else:
+        log("\n" + resumen(resultados, info_listados, pausadas))
     escribir_resumen_github(resultados)
     return resultados
+
+
+RUTA_AVISOS_LOCAL = BASE / "avisos_local.txt"
+
+
+def cargar_avisos_local() -> None:
+    """En tu PC, lee el token y el chat ID de avisos_local.txt (ese archivo NO se sube a GitHub)."""
+    if not RUTA_AVISOS_LOCAL.exists():
+        return
+    for linea in RUTA_AVISOS_LOCAL.read_text(encoding="utf-8").splitlines():
+        if "=" in linea and not linea.strip().startswith("#"):
+            clave, valor = linea.split("=", 1)
+            if valor.strip():
+                os.environ.setdefault(clave.strip(), valor.strip())
+
+
+def configurar() -> int:
+    print("Configuración de avisos para el vigilante en este ordenador.")
+    print("Se guarda en avisos_local.txt. NO subas ese archivo a GitHub: lleva el token de tu bot.\n")
+    token = input("Token del bot (el que te dio @BotFather): ").strip()
+    chat = input("Tu chat ID (el número que te dio @userinfobot): ").strip()
+    RUTA_AVISOS_LOCAL.write_text(f"TELEGRAM_TOKEN={token}\nTELEGRAM_CHAT_ID={chat}\n", encoding="utf-8")
+    os.environ["TELEGRAM_TOKEN"], os.environ["TELEGRAM_CHAT_ID"] = token, chat
+    ok = enviar_aviso("✅ Vigilante PS5 configurado en tu PC: los avisos te llegan bien.")
+    print("\nTe he mandado un Telegram de prueba." if ok else
+          "\nNo se pudo mandar el Telegram: revisa el token y el chat ID (borra avisos_local.txt y repite).")
+    return 0 if ok else 1
 
 
 def main(argv=None) -> int:
@@ -668,10 +1172,15 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Vigilante de stock de PS5")
     ap.add_argument("--probar", action="store_true", help="revisar sin avisar ni guardar estado")
     ap.add_argument("--probar-aviso", action="store_true", help="mandar un aviso de prueba y salir")
-    ap.add_argument("--resumen", action="store_true", help="mandar resumen del estado de todas las tiendas")
+    ap.add_argument("--resumen", action="store_true", help="mandar resumen del estado de todo")
     ap.add_argument("--bucle", type=int, metavar="SEGUNDOS", help="repetir cada N segundos")
     ap.add_argument("--sin-navegador", action="store_true", help="no usar Playwright")
+    ap.add_argument("--configurar", action="store_true", help="guardar token y chat ID para usarlo en tu PC")
     args = ap.parse_args(argv)
+
+    if args.configurar:
+        return configurar()
+    cargar_avisos_local()
 
     if args.probar_aviso:
         if not ((os.getenv("TELEGRAM_TOKEN") and os.getenv("TELEGRAM_CHAT_ID")) or os.getenv("NTFY_TOPIC")):
@@ -690,7 +1199,7 @@ def main(argv=None) -> int:
             pasada(args, nav)
             args.resumen = False
             espera = args.bucle * random.uniform(0.8, 1.2)
-            print(f"  ...siguiente revisión en {espera:.0f} s (Ctrl+C para parar)")
+            log(f"  ...siguiente revisión en {espera:.0f} s (Ctrl+C para parar)")
             time.sleep(espera)
     except KeyboardInterrupt:
         print("Parado.")

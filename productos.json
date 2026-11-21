@@ -1,12 +1,19 @@
 {
   "_ayuda": [
-    "precio_max: solo te aviso si está en stock a este precio o menos (así no saltan los revendedores).",
-    "activo: false = ese producto no se vigila.",
-    "vendedor: si la tienda tiene marketplace, solo cuenta si lo vende la propia tienda.",
-    "modo: 'http' (rápido) o 'navegador' (abre Chrome sin ventana; para webs que cargan el stock con JavaScript, como Sony).",
-    "fuente: 'texto' = mira si se ve el botón de comprar en vez de leer los datos internos de la ficha.",
-    "Para añadir otra tienda o modelo: copia un bloque, pega la URL de la ficha del producto y pon activo: true."
+    "productos: fichas concretas que se vigilan siempre. precio_max = solo avisa si está en stock a ese precio o menos.",
+    "listados: páginas de categoría de cada tienda. De ahí saca solo las consolas y packs (con juegos, mandos, saldo...) aunque sean nuevos.",
+    "reglas_packs: precio máximo de lo que sale de los listados = precio oficial de la consola + extra_por_juego_o_mando por cada juego o mando extra + el saldo que incluya.",
+    "vendedor: solo cuenta si lo vende la propia tienda (no marketplace).",
+    "experimental: true = si falla no te avisa (son URLs que hay que confirmar).",
+    "activo: false = no se vigila. Para añadir algo: copia un bloque, cambia la URL y pon activo: true."
   ],
+  "reglas_packs": {
+    "digital": 599.99,
+    "lector": 649.99,
+    "pro": 899.99,
+    "incluir_pro": false,
+    "extra_por_juego_o_mando": 60
+  },
   "productos": [
     {
       "tienda": "PcComponentes",
@@ -29,6 +36,22 @@
       "nombre": "PS5 Digital + 2 mandos",
       "url": "https://www.pccomponentes.com/sony-playstation-5-slim-digital-chasis-e-plus-2x-mandos-dualsense-v3",
       "precio_max": 649.99,
+      "vendedor": "PcComponentes",
+      "activo": true
+    },
+    {
+      "tienda": "PcComponentes",
+      "nombre": "PS5 Digital + tarjeta 20 €",
+      "url": "https://www.pccomponentes.com/sony-playstation-5-slim-digital-chasis-e-sony-tarjeta-prepago-20eur-para-playstation-store",
+      "precio_max": 619.99,
+      "vendedor": "PcComponentes",
+      "activo": true
+    },
+    {
+      "tienda": "PcComponentes",
+      "nombre": "PS5 con lector + Mafia + GTA V",
+      "url": "https://www.pccomponentes.com/sony-playstation-5-slim-chasis-e-mafia-the-old-country-gta-v",
+      "precio_max": 769.99,
       "vendedor": "PcComponentes",
       "activo": true
     },
@@ -100,36 +123,67 @@
       "activo": true
     },
     {
-      "tienda": "Carrefour",
-      "nombre": "PS5 Digital",
-      "url": "PEGA AQUÍ LA URL DE LA FICHA (carrefour.es → Consola PlayStation 5 Digital 825GB - Blanco)",
-      "precio_max": 599.99,
-      "vendedor": "Carrefour",
-      "activo": false
+      "tienda": "Sony (PlayStation Direct)",
+      "nombre": "PS5 con lector + 2 mandos",
+      "url": "https://direct.playstation.com/es-es/buy-consoles/playstation5-console-1-tb-two-dualsense-wireless-controllers-bundle",
+      "precio_max": 699.99,
+      "modo": "navegador",
+      "fuente": "texto",
+      "activo": true
+    }
+  ],
+  "listados": [
+    {
+      "tienda": "PcComponentes",
+      "url": "https://www.pccomponentes.com/videoconsolas-ps5",
+      "vendedor": "PcComponentes",
+      "max_productos": 25,
+      "activo": true
+    },
+    {
+      "tienda": "MediaMarkt",
+      "url": "https://www.mediamarkt.es/es/list/consolas-ps5-black-friday",
+      "vendedor": "MediaMarkt",
+      "max_productos": 25,
+      "activo": true
+    },
+    {
+      "tienda": "MediaMarkt",
+      "url": "https://www.mediamarkt.es/es/specials/sony-playstation5",
+      "vendedor": "MediaMarkt",
+      "max_productos": 25,
+      "experimental": true,
+      "activo": true
     },
     {
       "tienda": "Carrefour",
-      "nombre": "PS5 con lector",
-      "url": "PEGA AQUÍ LA URL DE LA FICHA (carrefour.es → Consola PlayStation 5 Estándar E 1TB - Blanco)",
-      "precio_max": 649.99,
+      "url": "https://www.carrefour.es/gaming/consolas-ps5/F-13riiZ1pt4/c",
       "vendedor": "Carrefour",
-      "activo": false
+      "max_productos": 25,
+      "activo": true
     },
     {
       "tienda": "El Corte Inglés",
-      "nombre": "PS5 Digital",
-      "url": "PEGA AQUÍ LA URL DE LA FICHA",
-      "precio_max": 599.99,
+      "url": "https://www.elcorteingles.es/videojuegos/ps5/consolas/",
       "vendedor": "El Corte Inglés",
-      "activo": false
+      "max_productos": 25,
+      "activo": true
     },
     {
-      "tienda": "El Corte Inglés",
-      "nombre": "PS5 con lector",
-      "url": "PEGA AQUÍ LA URL DE LA FICHA",
-      "precio_max": 649.99,
-      "vendedor": "El Corte Inglés",
-      "activo": false
+      "tienda": "Worten",
+      "url": "https://www.worten.es/gaming/playstation/consolas/ps5",
+      "vendedor": "Worten",
+      "max_productos": 25,
+      "experimental": true,
+      "activo": true
+    },
+    {
+      "tienda": "Fnac",
+      "url": "https://www.fnac.es/SearchResult/ResultList.aspx?Search=consola+ps5",
+      "vendedor": "Fnac",
+      "max_productos": 25,
+      "experimental": true,
+      "activo": true
     }
   ]
 }
