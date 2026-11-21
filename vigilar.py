@@ -481,25 +481,51 @@ def leer_mediamarkt(html: str, prod: dict, url_final: str) -> Optional[Lectura]:
     return None
 
 
+# --- Carrefour: su JSON-LD dice "InStock" siempre; lo real es el botón de compra del vendedor principal ---
+RE_CF_BOTON = re.compile(r'add-to-cart-button__button([^"]*)"[^>]*>\s*([^<]{0,60})', re.I)
+RE_CF_VENDEDOR = re.compile(r"Vendido por[\s\S]{0,400}?>\s*([^<>]{2,60}?)\s*<", re.I)
+RE_CF_PRECIO = re.compile(r'"price":"([\d.]+)"')
+
+
+def leer_carrefour(html: str, prod: dict) -> Optional[Lectura]:
+    boton = RE_CF_BOTON.search(html)
+    if not boton:
+        return None
+    modificador, texto = boton.group(1).lower(), sin_acentos(boton.group(2))
+    vend = RE_CF_VENDEDOR.search(html)
+    vendedor = vend.group(1).strip() if vend else None
+    m_precio = RE_CF_PRECIO.search(html)
+    precio = a_precio(m_precio.group(1)) if m_precio else None
+    pedido = normalizar_nombre(prod.get("vendedor", ""))
+    if vendedor and pedido and pedido not in normalizar_nombre(vendedor):
+        return Lectura(AGOTADO, precio, vendedor, "carrefour", "solo la venden vendedores externos")
+    if any(x in modificador for x in ("sold-out", "not-available", "disabled")) or \
+            any(x in texto for x in ("agotado", "no disponible", "avisame")):
+        return Lectura(AGOTADO, precio, vendedor, "carrefour", "agotado temporalmente")
+    return Lectura(EN_STOCK, precio, vendedor, "carrefour")
+
+
 def analizar(status: int, html: str, url_final: str, prod: dict,
              texto_visible: Optional[str] = None, modo: str = "http") -> Lectura:
     if es_cola(url_final, html, texto_visible):
         return Lectura(COLA, metodo=modo, detalle="cola virtual activa")
 
     previa: Optional[Lectura] = None
-    es_mediamarkt = "mediamarkt." in (dominio(prod.get("url", "")) + dominio(url_final or ""))
-    if es_mediamarkt:
-        lectura_mm = leer_mediamarkt(html, prod, url_final)
-        if lectura_mm:
-            lectura_mm.metodo = f"{modo}/{lectura_mm.metodo}"
-            return lectura_mm
+    dominios = dominio(prod.get("url", "")) + " " + dominio(url_final or "")
+    es_mediamarkt = "mediamarkt." in dominios
+    es_carrefour = "carrefour." in dominios
+    if es_mediamarkt or es_carrefour:
+        propia = leer_mediamarkt(html, prod, url_final) if es_mediamarkt else leer_carrefour(html, prod)
+        if propia:
+            propia.metodo = f"{modo}/{propia.metodo}"
+            return propia
     elif prod.get("fuente", "auto") != "texto":
         previa = leer_ldjson(html, prod) or leer_meta(html)
         if previa and previa.estado in (EN_STOCK, AGOTADO):
             previa.metodo = f"{modo}/{previa.metodo}"
             return previa
 
-    if (texto_visible is not None or prod.get("fuente") == "texto") and not es_mediamarkt:
+    if (texto_visible is not None or prod.get("fuente") == "texto") and not (es_mediamarkt or es_carrefour):
         lectura = leer_texto(texto_visible if texto_visible is not None else html_a_texto(html), prod)
         if lectura.estado in (EN_STOCK, AGOTADO):
             if lectura.precio is None and previa is not None:
