@@ -1,0 +1,135 @@
+{
+  "_ayuda": [
+    "precio_max: solo te aviso si está en stock a este precio o menos (así no saltan los revendedores).",
+    "activo: false = ese producto no se vigila.",
+    "vendedor: si la tienda tiene marketplace, solo cuenta si lo vende la propia tienda.",
+    "modo: 'http' (rápido) o 'navegador' (abre Chrome sin ventana; para webs que cargan el stock con JavaScript, como Sony).",
+    "fuente: 'texto' = mira si se ve el botón de comprar en vez de leer los datos internos de la ficha.",
+    "Para añadir otra tienda o modelo: copia un bloque, pega la URL de la ficha del producto y pon activo: true."
+  ],
+  "productos": [
+    {
+      "tienda": "PcComponentes",
+      "nombre": "PS5 Digital",
+      "url": "https://www.pccomponentes.com/sony-playstation-5-slim-digital-chasis-e",
+      "precio_max": 599.99,
+      "vendedor": "PcComponentes",
+      "activo": true
+    },
+    {
+      "tienda": "PcComponentes",
+      "nombre": "PS5 con lector",
+      "url": "https://www.pccomponentes.com/sony-playstation-5-slim-chasis-e",
+      "precio_max": 649.99,
+      "vendedor": "PcComponentes",
+      "activo": true
+    },
+    {
+      "tienda": "PcComponentes",
+      "nombre": "PS5 Digital + 2 mandos",
+      "url": "https://www.pccomponentes.com/sony-playstation-5-slim-digital-chasis-e-plus-2x-mandos-dualsense-v3",
+      "precio_max": 649.99,
+      "vendedor": "PcComponentes",
+      "activo": true
+    },
+    {
+      "tienda": "MediaMarkt",
+      "nombre": "PS5 Digital",
+      "url": "https://www.mediamarkt.es/es/product/_consola-sony-ps5-slim-digital-edition-825-gb-ssd-4k-1-mando-chasis-e-blanco-1605666.html",
+      "precio_max": 599.99,
+      "vendedor": "MediaMarkt",
+      "activo": true
+    },
+    {
+      "tienda": "MediaMarkt",
+      "nombre": "PS5 Digital + Fortnite",
+      "url": "https://www.mediamarkt.es/es/product/_consola-sony-ps5-slim-digital-edition-825-gb-ssd-4k-1-mando-chasis-e-blanco-pack-fortnite-flowering-chaos-codigo-de-descarga-1608846.html",
+      "precio_max": 599.99,
+      "vendedor": "MediaMarkt",
+      "activo": true
+    },
+    {
+      "tienda": "MediaMarkt",
+      "nombre": "PS5 con lector",
+      "url": "https://www.mediamarkt.es/es/product/_consola-sony-ps5-slim-standard-1-tb-ssd-4k-1-mando-chasis-e-blanco-1605665.html",
+      "precio_max": 649.99,
+      "vendedor": "MediaMarkt",
+      "activo": true
+    },
+    {
+      "tienda": "MediaMarkt",
+      "nombre": "PS5 Digital + 2 mandos",
+      "url": "https://www.mediamarkt.es/es/product/_consola-sony-ps5-slim-digital-edition-825-gb-ssd-4k-2-mandos-dualsense-chasis-e-blanco-1608844.html",
+      "precio_max": 649.99,
+      "vendedor": "MediaMarkt",
+      "activo": true
+    },
+    {
+      "tienda": "MediaMarkt",
+      "nombre": "PS5 con lector + 2 mandos",
+      "url": "https://www.mediamarkt.es/es/product/_consola-sony-ps5-slim-standard-1-tb-ssd-4k-2-mandos-dualsense-chasis-e-blanco-1608843.html",
+      "precio_max": 699.99,
+      "vendedor": "MediaMarkt",
+      "activo": true
+    },
+    {
+      "tienda": "Sony (PlayStation Direct)",
+      "nombre": "PS5 Digital",
+      "url": "https://direct.playstation.com/es-es/buy-consoles/playstation5-digital-edition-console-825-gb",
+      "precio_max": 599.99,
+      "modo": "navegador",
+      "fuente": "texto",
+      "activo": true
+    },
+    {
+      "tienda": "Sony (PlayStation Direct)",
+      "nombre": "PS5 Digital + 2 mandos",
+      "url": "https://direct.playstation.com/es-es/buy-consoles/playstation5-digital-edition-console-825-gb-two-dualsense-wireless-controllers-bundle",
+      "precio_max": 649.99,
+      "modo": "navegador",
+      "fuente": "texto",
+      "activo": true
+    },
+    {
+      "tienda": "Sony (PlayStation Direct)",
+      "nombre": "PS5 con lector",
+      "url": "https://direct.playstation.com/es-es/buy-consoles/playstation5-console-1-tb",
+      "precio_max": 649.99,
+      "modo": "navegador",
+      "fuente": "texto",
+      "activo": true
+    },
+    {
+      "tienda": "Carrefour",
+      "nombre": "PS5 Digital",
+      "url": "PEGA AQUÍ LA URL DE LA FICHA (carrefour.es → Consola PlayStation 5 Digital 825GB - Blanco)",
+      "precio_max": 599.99,
+      "vendedor": "Carrefour",
+      "activo": false
+    },
+    {
+      "tienda": "Carrefour",
+      "nombre": "PS5 con lector",
+      "url": "PEGA AQUÍ LA URL DE LA FICHA (carrefour.es → Consola PlayStation 5 Estándar E 1TB - Blanco)",
+      "precio_max": 649.99,
+      "vendedor": "Carrefour",
+      "activo": false
+    },
+    {
+      "tienda": "El Corte Inglés",
+      "nombre": "PS5 Digital",
+      "url": "PEGA AQUÍ LA URL DE LA FICHA",
+      "precio_max": 599.99,
+      "vendedor": "El Corte Inglés",
+      "activo": false
+    },
+    {
+      "tienda": "El Corte Inglés",
+      "nombre": "PS5 con lector",
+      "url": "PEGA AQUÍ LA URL DE LA FICHA",
+      "precio_max": 649.99,
+      "vendedor": "El Corte Inglés",
+      "activo": false
+    }
+  ]
+}
