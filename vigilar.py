@@ -245,9 +245,10 @@ def _productos_principales(bloques: list) -> list[dict]:
         if tipos & TIPOS_PRODUCTO:
             productos.append(n)
         else:
-            principal = n.get("mainEntity")
-            if isinstance(principal, dict) and set(_tipos(principal)) & TIPOS_PRODUCTO:
-                productos.append(principal)
+            for clave in ("mainEntity", "object", "item"):
+                principal = n.get(clave)
+                if isinstance(principal, dict) and set(_tipos(principal)) & TIPOS_PRODUCTO:
+                    productos.append(principal)
     return productos
 
 
@@ -394,28 +395,122 @@ def es_cola(url_final: str, html: str, texto: Optional[str]) -> bool:
     return False
 
 
+# --- MediaMarkt: su JSON-LD mezcla vendedores externos y variantes; el estado real va en __PRELOADED_STATE__ ---
+RE_ESTADO_PRECARGADO = re.compile(r"window\.__PRELOADED_STATE__\s*=\s*")
+
+
+def _objeto_js(html: str, inicio: int) -> Optional[str]:
+    profundidad, en_cadena, escape = 0, False, False
+    for j in range(inicio, len(html)):
+        c = html[j]
+        if en_cadena:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                en_cadena = False
+            continue
+        if c == '"':
+            en_cadena = True
+        elif c == "{":
+            profundidad += 1
+        elif c == "}":
+            profundidad -= 1
+            if profundidad == 0:
+                return html[inicio:j + 1]
+    return None
+
+
+def estado_mediamarkt(html: str) -> Optional[dict]:
+    m = RE_ESTADO_PRECARGADO.search(html)
+    if not m:
+        return None
+    txt = _objeto_js(html, m.end())
+    if not txt:
+        return None
+    txt = re.sub(r"([:\[,])undefined(?=[,\]}])", r"\1null", txt)
+    try:
+        return json.loads(txt).get("apolloState") or {}
+    except ValueError:
+        return None
+
+
+def _precio_mm(p: dict) -> Optional[float]:
+    for clave in ("promoPrice", "price"):
+        v = p.get(clave)
+        if isinstance(v, dict) and a_precio(v.get("amount")) is not None:
+            return a_precio(v.get("amount"))
+    return None
+
+
+def leer_mediamarkt(html: str, prod: dict, url_final: str) -> Optional[Lectura]:
+    ap = estado_mediamarkt(html)
+    if not ap:
+        return None
+    ids = []
+    for u in (prod.get("url", ""), url_final or ""):
+        m = re.search(r"-(\d+)\.html", u)
+        if m:
+            ids.append(m.group(1))
+    candidatos = list(ids)
+    for v in ap.values():
+        if isinstance(v, dict) and v.get("__typename") == "GraphqlProductMatch":
+            relacionados = {str(v.get(k)) for k in ("productId", "marketplaceProductId", "retailProductId",
+                                                     "preferredProductId")}
+            if relacionados & set(ids) and v.get("retailProductId"):
+                candidatos.insert(0, str(v["retailProductId"]))   # el producto que vende MediaMarkt
+    estados = {v.get("id"): v for v in ap.values()
+               if isinstance(v, dict) and v.get("__typename") == "CofrOnlineStatusFeature"}
+    precios = {v.get("id"): v for v in ap.values()
+               if isinstance(v, dict) and v.get("__typename") == "CofrPriceFeature"}
+    for pid in dict.fromkeys(candidatos):
+        s = estados.get(f"Media:es:{pid}")
+        if not s:
+            continue
+        p = precios.get(f"Media:es:{pid}") or {}
+        precio = _precio_mm(p)
+        st = str(s.get("onlineStatus") or "").upper()
+        if p.get("isProductOfTypeMarketplace") or st == "MP_OFFER":
+            return Lectura(AGOTADO, precio, metodo="mediamarkt", detalle="solo la venden vendedores externos")
+        if st == "AVAILABLE" or (s.get("isAvailableAndBuyable") and s.get("isAvailableForDelivery")):
+            return Lectura(EN_STOCK, precio, "MediaMarkt", "mediamarkt")
+        if st == "STORE_ONLY":
+            return Lectura(AGOTADO, precio, metodo="mediamarkt", detalle="online agotada, solo en tiendas físicas")
+        return Lectura(AGOTADO, precio, metodo="mediamarkt", detalle=st.lower().replace("_", " ") or "no disponible")
+    return None
+
+
 def analizar(status: int, html: str, url_final: str, prod: dict,
              texto_visible: Optional[str] = None, modo: str = "http") -> Lectura:
     if es_cola(url_final, html, texto_visible):
         return Lectura(COLA, metodo=modo, detalle="cola virtual activa")
 
     previa: Optional[Lectura] = None
-    if prod.get("fuente", "auto") != "texto":
+    es_mediamarkt = "mediamarkt." in (dominio(prod.get("url", "")) + dominio(url_final or ""))
+    if es_mediamarkt:
+        lectura_mm = leer_mediamarkt(html, prod, url_final)
+        if lectura_mm:
+            lectura_mm.metodo = f"{modo}/{lectura_mm.metodo}"
+            return lectura_mm
+    elif prod.get("fuente", "auto") != "texto":
         previa = leer_ldjson(html, prod) or leer_meta(html)
         if previa and previa.estado in (EN_STOCK, AGOTADO):
             previa.metodo = f"{modo}/{previa.metodo}"
             return previa
 
-    if texto_visible is not None or prod.get("fuente") == "texto":
+    if (texto_visible is not None or prod.get("fuente") == "texto") and not es_mediamarkt:
         lectura = leer_texto(texto_visible if texto_visible is not None else html_a_texto(html), prod)
         if lectura.estado in (EN_STOCK, AGOTADO):
             if lectura.precio is None and previa is not None:
                 lectura.precio = previa.precio
+            if lectura.estado == EN_STOCK and not prod.get("texto_fiable"):
+                lectura.detalle = "detectado por el botón de compra de la página, compruébalo"
             lectura.metodo = f"{modo}/{lectura.metodo}"
             return lectura
 
-    if status == 404:
-        return Lectura(ERROR, metodo=modo, detalle="la página no existe (404): revisa la URL")
+    if status in (404, 410):
+        return Lectura(ERROR, metodo=modo, detalle=f"la página ya no existe (HTTP {status}): revisa la URL")
     if status >= 400 or parece_bloqueo(html):
         return Lectura(ERROR, metodo=modo, detalle=f"la tienda bloquea la consulta (HTTP {status})")
     detalle = (previa.detalle if previa and previa.detalle else "no encuentro el stock en la página")
@@ -522,6 +617,18 @@ def precio_max_pack(titulo: str, reglas: dict) -> Optional[tuple[float, str]]:
     return total, explicacion
 
 
+def unir_textos(partes) -> str:
+    """Une nombre, title, aria-label y alt sin repetir lo que ya está contenido en otro."""
+    limpias: list[str] = []
+    for p in partes:
+        p = re.sub(r"\s+", " ", p or "").strip()
+        if not p or any(sin_acentos(p) in sin_acentos(q) for q in limpias):
+            continue
+        limpias = [q for q in limpias if sin_acentos(q) not in sin_acentos(p)]
+        limpias.append(p)
+    return " ".join(limpias)
+
+
 def extraer_enlaces(html: str, url_base: str) -> list[tuple[str, str]]:
     pares = []
     for attrs_txt, interior in RE_ENLACE.findall(html):
@@ -529,8 +636,8 @@ def extraer_enlaces(html: str, url_base: str) -> list[tuple[str, str]]:
         href = attrs.get("href", "")
         if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
             continue
-        texto = " ".join(x for x in (html_a_texto(interior), attrs.get("title", ""), attrs.get("aria-label", ""),
-                                     " ".join(RE_ALT.findall(interior))) if x)
+        texto = unir_textos([html_a_texto(interior), attrs.get("title", ""), attrs.get("aria-label", ""),
+                             *RE_ALT.findall(interior)])
         pares.append((urllib.parse.urljoin(url_base, href), texto))
     for nodo in _nodos_raiz(_cargar_ldjson(html)):
         if "itemlist" in _tipos(nodo):
@@ -551,10 +658,25 @@ RE_URL_NO_PRODUCTO = re.compile(
 RE_PRECIO_EN_TEXTO = re.compile(r"\s(?:desde\s)?(?:\d{1,3}(?:[.,]\d{3})+|\d{3,4})(?:[.,]\d{1,2})?\s?€")
 
 
+RE_ETIQUETA_INICIAL = re.compile(
+    r"^(?:-?\s*\d+\s*%\s*|top black friday\s*|black friday\s*|recomendado\s*|oferta\s*|novedad\s*|"
+    r"nuevo\s*|exclusivo\s*|top ventas\s*|mas vendido\s*|más vendido\s*|-\s*)+", re.I)
+
+
+def _quitar_repeticion(t: str) -> str:
+    """'PACK PS5 + Lobezno PACK PS5 + Lobezno ...' -> 'PACK PS5 + Lobezno ...'"""
+    for i in range(len(t) // 2, 9, -1):
+        if t[i] == " " and t[i + 1:].startswith(t[:i]):
+            return t[:i] + t[i + 1 + i:]
+    return t
+
+
 def limpiar_titulo(texto: str) -> str:
-    """Quita lo que acompaña al nombre en las tarjetas de producto (precio, opiniones, envío...)."""
+    """Quita lo que acompaña al nombre en las tarjetas de producto (precio, etiquetas, repeticiones...)."""
     texto = re.sub(r"\s+", " ", texto or "").strip()
-    return RE_PRECIO_EN_TEXTO.split(" " + texto)[0].strip()
+    texto = RE_PRECIO_EN_TEXTO.split(" " + texto)[0].strip()
+    texto = RE_ETIQUETA_INICIAL.sub("", texto).strip()
+    return _quitar_repeticion(texto).strip()
 
 
 def consolas_del_listado(pares: list[tuple[str, str]], url_listado: str, maximo: int) -> list[tuple[str, str]]:
@@ -597,7 +719,7 @@ def descargar_http(url: str, timeout: int = 25) -> tuple[int, str, str]:
 
 JS_ENLACES = """() => Array.from(document.querySelectorAll('a[href]')).map(a => [a.href,
   [(a.innerText || ''), a.getAttribute('title') || '', a.getAttribute('aria-label') || '',
-   Array.from(a.querySelectorAll('img[alt]')).map(i => i.alt).join(' ')].join(' ')])"""
+   ...Array.from(a.querySelectorAll('img[alt]')).map(i => i.alt)]])"""
 
 
 class Navegador:
@@ -651,7 +773,7 @@ class Navegador:
     def descargar_enlaces(self, url: str, timeout: int = 45) -> tuple[int, str, str, list]:
         ctx, pagina, status = self._abrir(url, timeout, desplazar=True)
         try:
-            enlaces = [tuple(x) for x in pagina.evaluate(JS_ENLACES)]
+            enlaces = [(href, unir_textos(partes)) for href, partes in pagina.evaluate(JS_ENLACES)]
             return status, pagina.content(), pagina.url, enlaces
         finally:
             ctx.close()
@@ -664,6 +786,10 @@ class Navegador:
                 self._pw.stop()
         except Exception:  # noqa: BLE001
             pass
+
+
+def _ya_no_existe(l: Lectura) -> bool:
+    return "ya no existe" in (l.detalle or "")
 
 
 def revisar_http(prod: dict) -> Lectura:
@@ -690,7 +816,7 @@ def revisar(prod: dict, nav: Optional[Navegador]) -> Lectura:
         return revisar_navegador(prod, nav)
     lectura = revisar_http(prod)
     if (lectura.estado in (ERROR, DESCONOCIDO) and nav is not None
-            and prod.get("reintentar_con_navegador", True) and "404" not in lectura.detalle and nav.arrancar()):
+            and prod.get("reintentar_con_navegador", True) and not _ya_no_existe(lectura) and nav.arrancar()):
         segunda = revisar_navegador(prod, nav)
         if segunda.estado in (EN_STOCK, AGOTADO, COLA):
             return segunda
@@ -723,7 +849,7 @@ def revisar_todos(productos: list[dict], nav: Optional[Navegador], pausa) -> lis
         l = lecturas[i]
         dom = dominio(p["url"])
         if (l.estado in (ERROR, DESCONOCIDO) and nav is not None and dom not in tiendas_que_fallan_en_navegador
-                and p.get("reintentar_con_navegador", True) and "404" not in l.detalle and nav.arrancar()):
+                and p.get("reintentar_con_navegador", True) and not _ya_no_existe(l) and nav.arrancar()):
             segunda = revisar_navegador(p, nav)
             if segunda.estado in (EN_STOCK, AGOTADO, COLA):
                 lecturas[i] = segunda
@@ -755,16 +881,19 @@ def descubrir_listados(listados: list[dict], nav: Optional[Navegador]) -> dict[s
     for lst in listados:
         url = lst["url"]
         items, detalle = resultado.get(url, ([], ""))
-        if items or nav is None or not lst.get("navegador_si_falla", True) or not nav.arrancar():
+        suficientes = len(items) >= lst.get("minimo_esperado", 5)
+        if suficientes or nav is None or not lst.get("navegador_si_falla", True) or not nav.arrancar():
             resultado[url] = (items, detalle or ("" if items else "no encuentro consolas en el listado"))
             continue
         try:
             status, html, final, enlaces = nav.descargar_enlaces(url)
-            items = consolas_del_listado(list(enlaces) + extraer_enlaces(html, final), url,
+            extra = consolas_del_listado(list(enlaces) + extraer_enlaces(html, final), url,
                                          lst.get("max_productos", 25))
-            resultado[url] = (items, "" if items else f"no encuentro consolas en el listado (HTTP {status})")
+            vistos = {u for u, _ in items}
+            juntos = (items + [x for x in extra if x[0] not in vistos])[:lst.get("max_productos", 25)]
+            resultado[url] = (juntos, "" if juntos else f"no encuentro consolas en el listado (HTTP {status})")
         except Exception as e:  # noqa: BLE001
-            resultado[url] = ([], detalle or f"{type(e).__name__}: {e}"[:150])
+            resultado[url] = (items, "" if items else (detalle or f"{type(e).__name__}: {e}"[:150]))
     return resultado
 
 
@@ -788,6 +917,20 @@ def trocear(texto: str, maximo: int = 3900) -> list[str]:
     return trozos
 
 
+def explicar_error_telegram(e: "urllib.error.HTTPError") -> str:
+    try:
+        descripcion = json.loads(e.read().decode("utf-8", "replace")).get("description", "")
+    except Exception:  # noqa: BLE001
+        descripcion = ""
+    pistas = {
+        401: "el TOKEN no es válido: cópialo otra vez de @BotFather (/mybots → tu bot → API Token).",
+        400: "el CHAT ID no es correcto: es el número que te da @userinfobot.",
+        403: "el bot no tiene permiso para escribirte: abre en Telegram el chat con ESE bot (el del token) "
+             "y pulsa Iniciar. Si ya lo hiciste, revisa que el chat ID sea el tuyo y no el de otro bot.",
+    }
+    return f"HTTP {e.code} {descripcion} -> {pistas.get(e.code, 'revisa el token y el chat ID')}"
+
+
 def enviar_aviso(texto: str, titulo: str = "Vigilante PS5", url: Optional[str] = None,
                  urgente: bool = False) -> bool:
     enviado = False
@@ -799,6 +942,8 @@ def enviar_aviso(texto: str, titulo: str = "Vigilante PS5", url: Optional[str] =
                                                 "disable_web_page_preview": "true"}).encode()
                 urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=datos, timeout=20)
             enviado = True
+        except urllib.error.HTTPError as e:
+            log(f"  ! Telegram falló: {explicar_error_telegram(e)}")
         except Exception as e:  # noqa: BLE001
             log(f"  ! Telegram falló: {e}")
     tema = os.getenv("NTFY_TOPIC")
@@ -1137,6 +1282,32 @@ def pasada(args, nav: Optional[Navegador], avisar=enviar_aviso, pausa=(1.5, 4.0)
     return resultados
 
 
+def volcar(url: str) -> int:
+    """Guarda lo que ve el script en una ficha (http y navegador) para poder ajustarlo."""
+    print(f"Descargando {url}")
+    try:
+        status, html, final = descargar_http(url)
+        (BASE / "volcado_http.html").write_text(html, encoding="utf-8")
+        print(f"  http: HTTP {status}, {len(html)} caracteres -> volcado_http.html")
+        print(f"  lectura http: {analizar(status, html, final, {'url': url})}")
+    except Exception as e:  # noqa: BLE001
+        print(f"  http falló: {e}")
+    nav = Navegador()
+    if nav.arrancar():
+        try:
+            status, html, texto, final = nav.descargar(url)
+            (BASE / "volcado_navegador.html").write_text(html, encoding="utf-8")
+            (BASE / "volcado_navegador.txt").write_text(texto, encoding="utf-8")
+            print(f"  navegador: HTTP {status} -> volcado_navegador.html y volcado_navegador.txt")
+            print(f"  lectura navegador: {analizar(status, html, final, {'url': url}, texto, 'navegador')}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  navegador falló: {e}")
+        finally:
+            nav.cerrar()
+    print("\nMándale a Claude los archivos volcado_* que se han creado en esta carpeta.")
+    return 0
+
+
 RUTA_AVISOS_LOCAL = BASE / "avisos_local.txt"
 
 
@@ -1160,7 +1331,8 @@ def configurar() -> int:
     os.environ["TELEGRAM_TOKEN"], os.environ["TELEGRAM_CHAT_ID"] = token, chat
     ok = enviar_aviso("✅ Vigilante PS5 configurado en tu PC: los avisos te llegan bien.")
     print("\nTe he mandado un Telegram de prueba." if ok else
-          "\nNo se pudo mandar el Telegram: revisa el token y el chat ID (borra avisos_local.txt y repite).")
+          "\nNo se pudo mandar el Telegram (mira el motivo de arriba). Para repetir: borra avisos_local.txt "
+          "y vuelve a abrir vigilar_en_pc.bat.")
     return 0 if ok else 1
 
 
@@ -1176,10 +1348,13 @@ def main(argv=None) -> int:
     ap.add_argument("--bucle", type=int, metavar="SEGUNDOS", help="repetir cada N segundos")
     ap.add_argument("--sin-navegador", action="store_true", help="no usar Playwright")
     ap.add_argument("--configurar", action="store_true", help="guardar token y chat ID para usarlo en tu PC")
+    ap.add_argument("--volcar", metavar="URL", help="guardar lo que ve el script en esa ficha (para ajustarlo)")
     args = ap.parse_args(argv)
 
     if args.configurar:
         return configurar()
+    if args.volcar:
+        return volcar(args.volcar)
     cargar_avisos_local()
 
     if args.probar_aviso:

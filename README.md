@@ -70,6 +70,7 @@ Para cubrir esas tiendas, ejecútalo también en tu PC:
    - La primera vez instala lo necesario (tarda un par de minutos).
    - Después te pide el token del bot y tu chat ID, y te manda un Telegram de prueba. Se guardan en `avisos_local.txt`. **No subas ese archivo a GitHub**, porque el repo es público y lleva tu token.
 3. Se queda vigilando cada 2 minutos y te manda un resumen de lo que ve desde tu PC. Deja la ventana abierta o minimizada.
+4. Cada vez que lo abres, descarga solo la última versión de `vigilar.py` y `productos.json` de este repo, así que solo hay que actualizar GitHub.
 
 **Para que arranque solo al encender el PC:** pulsa Win + R, escribe `shell:startup` y pulsa Enter. En la carpeta que se abre, crea un acceso directo a `vigilar_en_pc.bat` (clic derecho en el .bat → Mostrar más opciones → Crear acceso directo, y arrastra el acceso directo a esa carpeta).
 

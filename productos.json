@@ -65,14 +65,6 @@
     },
     {
       "tienda": "MediaMarkt",
-      "nombre": "PS5 Digital + Fortnite",
-      "url": "https://www.mediamarkt.es/es/product/_consola-sony-ps5-slim-digital-edition-825-gb-ssd-4k-1-mando-chasis-e-blanco-pack-fortnite-flowering-chaos-codigo-de-descarga-1608846.html",
-      "precio_max": 599.99,
-      "vendedor": "MediaMarkt",
-      "activo": true
-    },
-    {
-      "tienda": "MediaMarkt",
       "nombre": "PS5 con lector",
       "url": "https://www.mediamarkt.es/es/product/_consola-sony-ps5-slim-standard-1-tb-ssd-4k-1-mando-chasis-e-blanco-1605665.html",
       "precio_max": 649.99,
@@ -135,24 +127,17 @@
   "listados": [
     {
       "tienda": "PcComponentes",
-      "url": "https://www.pccomponentes.com/videoconsolas-ps5",
+      "url": "https://www.pccomponentes.com/categorias/videoconsolas-ps5",
       "vendedor": "PcComponentes",
       "max_productos": 25,
-      "activo": true
+      "activo": true,
+      "experimental": true
     },
     {
       "tienda": "MediaMarkt",
-      "url": "https://www.mediamarkt.es/es/list/consolas-ps5-black-friday",
+      "url": "https://www.mediamarkt.es/es/category/consolas-ps5-8431.html",
       "vendedor": "MediaMarkt",
       "max_productos": 25,
-      "activo": true
-    },
-    {
-      "tienda": "MediaMarkt",
-      "url": "https://www.mediamarkt.es/es/specials/sony-playstation5",
-      "vendedor": "MediaMarkt",
-      "max_productos": 25,
-      "experimental": true,
       "activo": true
     },
     {
@@ -175,7 +160,7 @@
       "vendedor": "Worten",
       "max_productos": 25,
       "experimental": true,
-      "activo": true
+      "activo": false
     },
     {
       "tienda": "Fnac",
@@ -183,7 +168,7 @@
       "vendedor": "Fnac",
       "max_productos": 25,
       "experimental": true,
-      "activo": true
+      "activo": false
     }
   ]
 }
