@@ -1,0 +1,60 @@
+name: Vigilar stock PS5
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # cada 5 min (GitHub a veces lo retrasa unos minutos)
+  workflow_dispatch:
+    inputs:
+      resumen:
+        description: "Mandarme un resumen del estado de todas las tiendas"
+        type: boolean
+        default: true
+
+concurrency:
+  group: vigilar-ps5
+  cancel-in-progress: false
+
+jobs:
+  vigilar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Cachear Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Instalar Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Recuperar estado anterior
+        uses: actions/cache/restore@v4
+        with:
+          path: estado.json
+          key: estado-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: estado-
+
+      - name: Revisar tiendas
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python vigilar.py ${{ (github.event_name == 'workflow_dispatch' && inputs.resumen) && '--resumen' || '' }}
+
+      - name: Guardar estado
+        if: always() && hashFiles('estado.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: estado.json
+          key: estado-${{ github.run_id }}-${{ github.run_attempt }}
