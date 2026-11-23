@@ -2,7 +2,7 @@
   "_ayuda": [
     "productos: fichas concretas que se vigilan siempre. precio_max = solo avisa si está en stock a ese precio o menos.",
     "listados: páginas de categoría de cada tienda. De ahí saca solo las consolas y packs (con juegos, mandos, saldo...) aunque sean nuevos.",
-    "reglas_packs: precio máximo de lo que sale de los listados = precio oficial de la consola + extra_por_juego_o_mando por cada juego o mando extra + el saldo que incluya.",
+    "reglas_packs: precio máximo de lo que sale de los listados = precio oficial de la consola + lo que vale cada extra según valor_extras (juego, mando, SSD por TB, auriculares, PS Portal, PS VR2...) + el saldo que incluya. Los packs con tele se ignoran. Baja o sube esos valores a tu gusto.",
     "vendedor: solo cuenta si lo vende la propia tienda (no marketplace).",
     "experimental: true = si falla no te avisa (son URLs que hay que confirmar).",
     "activo: false = no se vigila. Para añadir algo: copia un bloque, cambia la URL y pon activo: true.",
@@ -13,7 +13,17 @@
     "lector": 649.99,
     "pro": 899.99,
     "incluir_pro": false,
-    "extra_por_juego_o_mando": 60
+    "valor_extras": {
+      "juego": 80,
+      "mando": 75,
+      "mando_edge": 240,
+      "ssd_por_tb": 270,
+      "auriculares": 100,
+      "portal": 250,
+      "vr2": 400,
+      "lector": 80,
+      "accesorio": 40
+    }
   },
   "productos": [
     {
@@ -53,6 +63,24 @@
       "nombre": "PS5 con lector + Mafia + GTA V",
       "url": "https://www.pccomponentes.com/sony-playstation-5-slim-chasis-e-mafia-the-old-country-gta-v",
       "precio_max": 769.99,
+      "vendedor": "PcComponentes",
+      "activo": true
+    },
+    {
+      "tienda": "PcComponentes",
+      "nombre": "PS5 Digital + SSD Samsung 990 PRO 1TB",
+      "url": "https://www.pccomponentes.com/sony-playstation-5-slim-digital-chasis-e-plus-samsung-990-pro-1-tb-ssd-pcie-4-0-nvme-disipador-termico",
+      "precio_max": 869.99,
+      "regla": "PS5 Digital 599,99 € + SSD 1 TB 270,00 €",
+      "vendedor": "PcComponentes",
+      "activo": true
+    },
+    {
+      "tienda": "PcComponentes",
+      "nombre": "PS5 Digital + SSD 990 PRO 1TB + GTA VI",
+      "url": "https://www.pccomponentes.com/sony-playstation-5-slim-digital-chasis-e-plus-samsung-990-pro-1-tb-ssd-plus-grand-theft-auto-vi-standard-ed-gta-vi-ciab",
+      "precio_max": 949.99,
+      "regla": "PS5 Digital 599,99 € + SSD 1 TB 270,00 € + juego 80,00 €",
       "vendedor": "PcComponentes",
       "activo": true
     },

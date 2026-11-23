@@ -4,7 +4,7 @@ Revisa cada pocos minutos la PS5 y sus packs en PcComponentes, MediaMarkt, Sony 
 
 **Cómo encuentra los packs:** además de las fichas fijas, lee la página de "consolas PS5" de cada tienda y saca solas las consolas y los packs (con juegos, mandos, saldo...), aunque salgan nuevos. Deja fuera los accesorios, los juegos sueltos, los reacondicionados y la PS5 Pro.
 
-**Precio máximo de cada pack:** precio oficial de la consola (599,99 € la Digital y 649,99 € la de lector) + 60 € por cada juego o mando extra + el saldo que incluya. Por ejemplo, "PS5 con lector + Lobezno + Spider-Man 2" → 649,99 + 2 × 60 = 769,99 €. Lo puedes cambiar en `reglas_packs` dentro de `productos.json`.
+**Precio máximo de cada pack:** precio oficial de la consola (599,99 € la Digital y 649,99 € la de lector) + lo que vale cada extra: juego 80 €, mando 75 €, SSD 270 € por TB, auriculares 100 €, PS Portal 250 €, PS VR2 400 € (+ el saldo que incluya). Ejemplos: "PS5 Digital + SSD 990 PRO 1 TB" → 599,99 + 270 = 869,99 €; "PS5 con lector + Lobezno + Spider-Man 2" → 649,99 + 2 × 80 = 809,99 €. Los packs con tele se ignoran. Lo puedes cambiar en `reglas_packs` → `valor_extras` dentro de `productos.json`.
 
 Qué avisos puede mandarte:
 
@@ -54,7 +54,7 @@ Edita `productos.json` (en GitHub: abre el archivo → icono del lápiz → *Com
 
 - `productos`: fichas concretas que se vigilan siempre. `precio_max` es el precio máximo al que te avisa.
 - `listados`: la página de consolas PS5 de cada tienda, de donde saca los packs. Para añadir otra tienda, copia un bloque, pega la URL de su página de consolas PS5 y ponle `activo: true`. Con `experimental: true` no te avisa si falla.
-- `reglas_packs`: precios oficiales y cuánto sumar por cada juego o mando extra. Si quieres que también vigile la PS5 Pro, pon `incluir_pro: true`.
+- `reglas_packs`: precios oficiales y, en `valor_extras`, cuánto sumar por cada cosa que traiga el pack. Si quieres que también vigile la PS5 Pro, pon `incluir_pro: true`.
 
 `activo: false` deja de vigilar cualquier bloque.
 

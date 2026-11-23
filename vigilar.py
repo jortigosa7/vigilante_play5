@@ -9,7 +9,8 @@ Hace dos cosas en cada pasada:
      ntfy cuando una pasa a estar EN STOCK a un precio igual o menor que su máximo.
 
 Precio máximo de los packs descubiertos = precio oficial de la consola (digital / con lector)
-+ X € por cada juego o mando extra + el saldo que incluya (todo configurable en productos.json).
++ lo que vale cada extra (juego, mando, SSD por TB, auriculares, PS Portal...) + el saldo que incluya
+(todo configurable en productos.json, "reglas_packs" -> "valor_extras"). Los packs con tele se ignoran.
 
 Uso:
   python vigilar.py                 una pasada (lo que ejecuta GitHub Actions)
@@ -58,8 +59,11 @@ COLA = "cola"            # cola virtual (Queue-it): suele significar reposición
 DESCONOCIDO = "desconocido"
 ERROR = "error"
 
-REGLAS_POR_DEFECTO = {"digital": 599.99, "lector": 649.99, "pro": 899.99,
-                      "incluir_pro": False, "extra_por_juego_o_mando": 60}
+# Lo que vale cada cosa que acompaña a la consola en un pack (precio oficial o de calle actual).
+VALOR_EXTRAS_POR_DEFECTO = {"juego": 80, "mando": 75, "mando_edge": 240, "ssd_por_tb": 270,
+                            "auriculares": 100, "portal": 250, "vr2": 400, "lector": 80, "accesorio": 40}
+REGLAS_POR_DEFECTO = {"digital": 599.99, "lector": 649.99, "pro": 899.99, "incluir_pro": False,
+                      "valor_extras": VALOR_EXTRAS_POR_DEFECTO}
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -252,7 +256,20 @@ def _productos_principales(bloques: list) -> list[dict]:
     return productos
 
 
-def _ofertas_de(nodo: dict) -> list[dict]:
+def _url_variante(variante: dict) -> Optional[str]:
+    for o in _como_lista(variante.get("offers")):
+        if isinstance(o, dict) and isinstance(o.get("url"), str):
+            return o["url"]
+    for clave in ("url", "@id"):
+        if isinstance(variante.get(clave), str) and variante[clave].startswith("http"):
+            return variante[clave]
+    return None
+
+
+def _ofertas_de(nodo: dict, urls: tuple = ()) -> list[dict]:
+    """Ofertas de un producto. Si es un grupo con variantes (PcComponentes: 'PS5 Digital' con sus packs),
+    solo cuenta la variante de la propia ficha: las demás variantes del JSON-LD a veces dicen
+    'InStock' aunque estén agotadas."""
     ofertas = []
     for o in _como_lista(nodo.get("offers")):
         if not isinstance(o, dict):
@@ -263,9 +280,11 @@ def _ofertas_de(nodo: dict) -> list[dict]:
                 ofertas.append(o)
         else:
             ofertas.append(o)
-    for variante in _como_lista(nodo.get("hasVariant")):
-        if isinstance(variante, dict):
-            ofertas += _ofertas_de(variante)
+    variantes = [v for v in _como_lista(nodo.get("hasVariant")) if isinstance(v, dict)]
+    buscadas = {limpiar_url(u) for u in urls if u}
+    propias = [v for v in variantes if _url_variante(v) and limpiar_url(_url_variante(v)) in buscadas]
+    for variante in propias or variantes:
+        ofertas += _ofertas_de(variante)
     return ofertas
 
 
@@ -323,9 +342,9 @@ def evaluar_ofertas(ofertas: list[dict], prod: dict, metodo: str) -> Lectura:
     return Lectura(DESCONOCIDO, precio, metodo=metodo, detalle="la ficha no dice si hay stock")
 
 
-def leer_ldjson(html: str, prod: dict) -> Optional[Lectura]:
+def leer_ldjson(html: str, prod: dict, url_final: Optional[str] = None) -> Optional[Lectura]:
     for producto in _productos_principales(_cargar_ldjson(html)):
-        ofertas = _ofertas_de(producto)
+        ofertas = _ofertas_de(producto, (url_final, prod.get("url")))
         if ofertas:
             return evaluar_ofertas(ofertas, prod, "json-ld")
     return None
@@ -526,7 +545,7 @@ def analizar(status: int, html: str, url_final: str, prod: dict,
             propia.metodo = f"{modo}/{propia.metodo}"
             return propia
     elif prod.get("fuente", "auto") != "texto":
-        previa = leer_ldjson(html, prod) or leer_meta(html)
+        previa = leer_ldjson(html, prod, url_final) or leer_meta(html)
         if previa and previa.estado in (EN_STOCK, AGOTADO):
             previa.metodo = f"{modo}/{previa.metodo}"
             return previa
@@ -562,8 +581,9 @@ RE_ACCESORIO_AL_INICIO = re.compile(
     r"playstation portal|ps portal|gafas|ps ?vr|kit\b|protector|skin|vinilo|ventilador|bolsa|maleta|"
     r"mochila|dualsense|dualshock|teclado|raton|mini consola|codigo|suscripcion|playstation plus|ps plus|"
     r"pegatina|adaptador|hub\b|memoria|wd_?black|seagate|samsung|nacon|razer|logitech|corsair)")
-PALABRAS_EXCLUIDAS = ("reacondicionad", "seminuevo", "usado", "segunda mano", "playstation portal",
-                      "ps portal", "vr2", "ps vr")
+PALABRAS_EXCLUIDAS = ("reacondicionad", "seminuevo", "usado", "segunda mano")
+# no son una PS5 si son lo principal del título (sí valen como extra de un pack: "PS5 + PS Portal")
+PALABRAS_EXCLUIDAS_PRINCIPAL = ("playstation portal", "ps portal", "vr2", "ps vr")
 RE_ES_CONSOLA = re.compile(
     r"\bconsola\b|\bslim\b|chasis|chassis|edicion digital|digital edition|\bbundle\b|"
     r"\bpack\s+(?:de\s+)?(?:consola\s+)?(?:ps5|playstation\s*5)|"
@@ -579,6 +599,8 @@ def es_consola_ps5(titulo: str) -> bool:
     if any(x in t for x in PALABRAS_EXCLUIDAS):
         return False
     principal = _partes_pack(t)[0][1]
+    if any(x in principal for x in PALABRAS_EXCLUIDAS_PRINCIPAL):
+        return False
     if re.search(r"\bpara\s+(?:la\s+|tu\s+|las\s+)?(?:consolas?|ps5|playstation)", principal):
         return False  # "Soporte para consola PS5", "SSD para PS5"...
     return bool(RE_ES_CONSOLA.search(principal))
@@ -593,41 +615,86 @@ def _partes_pack(t: str) -> list[tuple[str, str]]:
     return [p for p in partes if p[1]]
 
 
-def contar_extras(titulo: str) -> tuple[int, float]:
-    """(número de juegos/mandos extra, € de saldo incluido)."""
+# Qué es cada cosa que va con la consola (en este orden; lo que no encaje se cuenta como juego)
+TIPOS_EXTRA = [
+    ("tv", re.compile(r"\btv\b|televisor|smart ?tv|\b[qo]led\b|\d{2}\s*(?:\"|”|''|pulgadas)|\bmonitor\b")),
+    ("portal", re.compile(r"\bportal\b")),
+    ("vr2", re.compile(r"\bvr\s?2\b|\bps\s?vr\b|playstation vr")),
+    ("mando_edge", re.compile(r"\bedge\b")),
+    ("ssd", re.compile(r"\bssd\b|nvme|\bm\.2\b|\b990\s?pro\b|\bsn\s?850|wd_?black|firecuda|"
+                       r"\b\d+(?:[.,]\d+)?\s*tb\b")),
+    ("auriculares", re.compile(r"auricular|cascos|headset|\bpulse\b|kaira|\bnari\b|arctis|blackshark|"
+                               r"\bcloud\b")),
+    ("lector", re.compile(r"\blector\b|unidad de disco")),
+    ("mando", re.compile(r"\bmandos?\b|dualsense|dualshock")),
+    ("accesorio", re.compile(r"soporte|cargador|estacion de carga|base de carga|\bfunda|cubierta|carcasa|"
+                             r"\bcable|\bbolsa|maleta|protector|\bskin|vinilo|ventilador|\bhub\b")),
+]
+NOMBRES_EXTRA = {"juego": ("juego", "juegos"), "mando": ("mando", "mandos"),
+                 "mando_edge": ("DualSense Edge", "DualSense Edge"), "auriculares": ("auriculares", "auriculares"),
+                 "portal": ("PS Portal", "PS Portal"), "vr2": ("PS VR2", "PS VR2"),
+                 "lector": ("lector de discos", "lectores de discos"), "accesorio": ("accesorio", "accesorios")}
+
+
+def _terabytes(trozo: str) -> float:
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*tb\b", trozo)
+    if m:
+        return float(m.group(1).replace(",", "."))
+    m = re.search(r"\b(\d{3,4})\s*gb\b", trozo)
+    return int(m.group(1)) / 1000 if m else 1.0
+
+
+def desglose_extras(titulo: str) -> list[tuple[str, float]]:
+    """Lo que trae el pack además de la consola: [(tipo, cantidad)]; para SSD la cantidad son TB
+    y para 'saldo' son euros."""
     t = normalizar_titulo(titulo)
     partes = _partes_pack(t)
     principal = partes[0][1]
-    n, saldo = 0, 0.0
+    extras: list[tuple[str, float]] = []
     m = re.search(r"(\d+)\s*x?\s*mandos", principal)
     if m and int(m.group(1)) > 1:
-        n += int(m.group(1)) - 1
+        extras.append(("mando", int(m.group(1)) - 1))
     for sep, trozo in partes[1:]:
         if any(w in trozo for w in ("fortnite", "cosmetic", "avatar", "contenido descargable")):
             continue
         if any(w in trozo for w in ("tarjeta", "saldo", "ps plus", "playstation plus", "prepago", "psn")):
             mm = re.search(r"(\d+)\s*(?:€|eur)", trozo)
-            saldo += float(mm.group(1)) if mm else 0.0
+            if mm:
+                extras.append(("saldo", float(mm.group(1))))
             continue
-        if re.match(r"(?:\d+\s*x?\s*)?(?:mando|dualsense|lector|unidad de disco|1\s*mando)", trozo) and sep == "con":
+        if sep == "con" and re.match(r"(?:\d+\s*x?\s*)?(?:mando|dualsense|lector|unidad de disco|1\s*mando)", trozo):
+            # "con 2 mandos" / "con lector": describe la consola; solo cuentan los mandos de más
             mk = re.search(r"(\d+)\s*x?\s*(?:mandos?|dualsense)", trozo)
-            n += max(int(mk.group(1)) - 1, 0) if mk else 0
+            if mk and int(mk.group(1)) > 1:
+                extras.append(("mando", int(mk.group(1)) - 1))
             continue
-        mk = re.search(r"(\d+)\s*x?\s*(?:mandos?|dualsense)", trozo)
-        if mk or re.search(r"\bmando|\bdualsense", trozo):
+        tipo = next((nombre for nombre, regex in TIPOS_EXTRA if regex.search(trozo)), "juego")
+        if tipo == "ssd":
+            extras.append(("ssd", _terabytes(trozo)))
+        elif tipo == "mando":
+            mk = re.search(r"(\d+)\s*x?\s*(?:mandos?|dualsense)", trozo)
             k = int(mk.group(1)) if mk else 1
-            n += k - 1 if k >= 2 else 1
-            continue
-        n += 1
-    if n == 0 and saldo == 0 and len(partes) == 1 and \
+            extras.append(("mando", k - 1 if k >= 2 else 1))  # "+ 2 DualSense" = el de la caja + 1
+        else:
+            extras.append((tipo, 1))
+    extras = [(tipo, c) for tipo, c in extras if c]
+    if not extras and len(partes) == 1 and \
             re.search(r"edicion limitada|limited edition|\bbundle\b", principal) and "fortnite" not in principal:
-        n = 1
-    return n, saldo
+        extras.append(("juego", 1))  # los bundles de edición limitada suelen llevar el juego
+    return extras
+
+
+def contar_extras(titulo: str) -> tuple[int, float]:
+    """(número de cosas extra, € de saldo incluido)."""
+    extras = desglose_extras(titulo)
+    n = sum(int(c) if tipo != "ssd" else 1 for tipo, c in extras if tipo != "saldo")
+    return n, sum(c for tipo, c in extras if tipo == "saldo")
 
 
 def precio_max_pack(titulo: str, reglas: dict) -> Optional[tuple[float, str]]:
-    """Precio máximo razonable para una consola/pack según su título. None = no vigilar (p. ej. Pro)."""
+    """Precio máximo razonable para una consola/pack según su título. None = no vigilar (Pro, packs con tele)."""
     r = {**REGLAS_POR_DEFECTO, **(reglas or {})}
+    valores = {**VALOR_EXTRAS_POR_DEFECTO, **(r.get("valor_extras") or {})}
     t = normalizar_titulo(titulo)
     principal = _partes_pack(t)[0][1]
     if re.search(r"\bpro\b", principal):
@@ -638,15 +705,30 @@ def precio_max_pack(titulo: str, reglas: dict) -> Optional[tuple[float, str]]:
         base, tipo = float(r["digital"]), "PS5 Digital"
     else:
         base, tipo = float(r["lector"]), "PS5 con lector"
-    n, saldo = contar_extras(titulo)
-    extra = float(r["extra_por_juego_o_mando"])
-    total = round(base + n * extra + saldo, 2)
-    explicacion = f"{tipo} {euros(base)}"
-    if n:
-        explicacion += f" + {n} extra{'s' if n > 1 else ''} × {euros(extra)}"
-    if saldo:
-        explicacion += f" + saldo {euros(saldo)}"
-    return total, explicacion
+    extras = desglose_extras(titulo)
+    if any(tipo_extra == "tv" for tipo_extra, _ in extras):
+        return None  # packs con tele: no es lo que buscas
+
+    agrupados: "OrderedDict[str, float]" = OrderedDict()
+    for tipo_extra, cantidad in extras:
+        agrupados[tipo_extra] = agrupados.get(tipo_extra, 0) + cantidad
+    total, trozos = base, [f"{tipo} {euros(base)}"]
+    for tipo_extra, cantidad in agrupados.items():
+        if tipo_extra == "saldo":
+            total += cantidad
+            trozos.append(f"saldo {euros(cantidad)}")
+        elif tipo_extra == "ssd":
+            valor = float(valores["ssd_por_tb"]) * cantidad
+            total += valor
+            tb = f"{cantidad:g}".replace(".", ",")
+            trozos.append(f"SSD {tb} TB {euros(valor)}")
+        else:
+            unidad = float(valores.get(tipo_extra, valores["juego"]))
+            total += unidad * cantidad
+            singular, plural = NOMBRES_EXTRA.get(tipo_extra, (tipo_extra, tipo_extra))
+            n = int(cantidad)
+            trozos.append(f"{singular} {euros(unidad)}" if n == 1 else f"{n} {plural} × {euros(unidad)}")
+    return round(total, 2), " + ".join(trozos)
 
 
 def unir_textos(partes) -> str:
