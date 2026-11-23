@@ -488,7 +488,10 @@ RE_CF_PRECIO = re.compile(r'"price":"([\d.]+)"')
 
 
 def leer_carrefour(html: str, prod: dict) -> Optional[Lectura]:
-    boton = RE_CF_BOTON.search(html)
+    inicio = html.find("buybox__add-to-cart-button")
+    if inicio < 0:
+        return None          # no es una ficha de producto (p. ej. te ha mandado a una categoría)
+    boton = RE_CF_BOTON.search(html, inicio)
     if not boton:
         return None
     modificador, texto = boton.group(1).lower(), sin_acentos(boton.group(2))
@@ -509,6 +512,9 @@ def analizar(status: int, html: str, url_final: str, prod: dict,
              texto_visible: Optional[str] = None, modo: str = "http") -> Lectura:
     if es_cola(url_final, html, texto_visible):
         return Lectura(COLA, metodo=modo, detalle="cola virtual activa")
+    if (url_final and prod.get("url") and limpiar_url(url_final) != limpiar_url(prod["url"])
+            and RE_URL_NO_PRODUCTO.search(urllib.parse.urlsplit(url_final).path)):
+        return Lectura(ERROR, metodo=modo, detalle="la ficha ya no existe (te manda a una categoría)")
 
     previa: Optional[Lectura] = None
     dominios = dominio(prod.get("url", "")) + " " + dominio(url_final or "")
@@ -763,8 +769,11 @@ class Navegador:
         try:
             from playwright.sync_api import sync_playwright
             self._pw = sync_playwright().start()
-            self._browser = self._pw.chromium.launch(
-                headless=True, args=["--disable-blink-features=AutomationControlled"])
+            argumentos = ["--disable-blink-features=AutomationControlled"]
+            try:
+                self._browser = self._pw.chromium.launch(channel="chrome", headless=True, args=argumentos)
+            except Exception:  # noqa: BLE001  (no hay Google Chrome instalado)
+                self._browser = self._pw.chromium.launch(headless=True, args=argumentos)
             self.disponible = True
         except Exception as e:  # noqa: BLE001
             self.disponible = False
@@ -1019,7 +1028,9 @@ def mensaje_fallos(prod: dict, l: Lectura) -> str:
 
 def procesar_lectura(prod: dict, l: Lectura, estado: dict, avisar: Callable[..., bool],
                      silenciar_fallos: bool = False) -> None:
-    e = estado.setdefault(prod["url"], {"ok": False, "cola": False, "fallos": 0, "aviso_fallos": False})
+    e = estado.setdefault(prod["url"], {})
+    for clave, defecto in (("ok", False), ("cola", False), ("fallos", 0), ("aviso_fallos", False)):
+        e.setdefault(clave, defecto)
     precio_max = float(prod.get("precio_max") or 10**9)
 
     if l.estado in (ERROR, DESCONOCIDO):
@@ -1250,7 +1261,7 @@ def productos_descubiertos(lst: dict, items: list, reglas: dict) -> list[dict]:
             "precio_max": precio_max, "regla": regla, "vendedor": lst.get("vendedor", ""),
             "modo": lst.get("modo_productos", "http"), "fuente": lst.get("fuente_productos", "auto"),
             "reintentar_con_navegador": lst.get("navegador_en_fichas", True), "descubierto": True,
-            "listado": lst["url"],
+            "listado": lst["url"], "cada_minutos": lst.get("cada_minutos_fichas", 0),
         })
     return salida
 
@@ -1264,30 +1275,51 @@ def pasada(args, nav: Optional[Navegador], avisar=enviar_aviso, pausa=(1.5, 4.0)
     pausadas = set() if args.probar else tiendas_en_pausa(estado)
     if pausadas:
         log(f"[{ahora_iso()}] En pausa por bloqueo: {', '.join(sorted(pausadas))}")
-    listados = [l for l in cfg["listados"] if l["tienda"] not in pausadas]
+    ahora = time.time()
 
-    # 1) Listados -> consolas y packs descubiertos
+    def toca(clave: str, minutos) -> bool:
+        if args.probar or not minutos:
+            return True
+        return (estado.get(clave) or {}).get("proxima", 0) <= ahora
+
+    listados = [l for l in cfg["listados"] if l["tienda"] not in pausadas]
+    estado_listados = estado.setdefault("_listados", {})
+
+    # 1) Listados -> consolas y packs descubiertos (los que no tocan, con lo último que se vio)
     productos = [p for p in cfg["productos"] if p["tienda"] not in pausadas]
     vistas = {limpiar_url(p["url"]) for p in productos}
     info_listados = []
-    if listados:
-        log(f"[{ahora_iso()}] Leyendo {len(listados)} listados")
-        encontrados = descubrir_listados(listados, nav)
-        for lst in listados:
+    a_leer = [l for l in listados if args.probar or not l.get("cada_minutos")
+              or estado_listados.get(l["url"], {}).get("proxima", 0) <= ahora]
+    encontrados = {}
+    if a_leer:
+        log(f"[{ahora_iso()}] Leyendo {len(a_leer)} listados")
+        encontrados = descubrir_listados(a_leer, nav)
+    for lst in listados:
+        if lst in a_leer:
             items, detalle = encontrados.get(lst["url"], ([], "sin respuesta"))
             usados = items if args.probar else procesar_listado(lst, items, detalle, estado, None)
             info_listados.append((lst, len(items), detalle))
+            if lst.get("cada_minutos") and not args.probar:
+                estado_listados[lst["url"]]["proxima"] = ahora + float(lst["cada_minutos"]) * 60
             log(f"  🔎 {lst['tienda']:<15} {len(items)} consolas/packs en el listado"
                 + (f"  ({detalle})" if detalle else ""))
-            for prod in productos_descubiertos(lst, usados, cfg["reglas"]):
-                clave = limpiar_url(prod["url"])
-                if clave not in vistas:
-                    vistas.add(clave)
-                    productos.append(prod)
+        else:
+            usados = [tuple(x) for x in estado_listados.get(lst["url"], {}).get("productos", [])]
+        for prod in productos_descubiertos(lst, usados, cfg["reglas"]):
+            clave = limpiar_url(prod["url"])
+            if clave not in vistas:
+                vistas.add(clave)
+                productos.append(prod)
 
-    # 2) Fichas
-    log(f"[{ahora_iso()}] Revisando {len(productos)} fichas")
-    resultados = revisar_todos(productos, nav, pausa)
+    # 2) Fichas (solo las que tocan en esta pasada)
+    pendientes = [p for p in productos if toca(p["url"], p.get("cada_minutos"))]
+    log(f"[{ahora_iso()}] Revisando {len(pendientes)} de {len(productos)} fichas")
+    resultados = revisar_todos(pendientes, nav, pausa)
+    if not args.probar:
+        for p, _ in resultados:
+            if p.get("cada_minutos"):
+                estado.setdefault(p["url"], {})["proxima"] = ahora + float(p["cada_minutos"]) * 60
     for prod, l in resultados:
         log(f"  {icono(prod, l)} {prod['tienda']:<15} {prod['nombre'][:60]:<60} {descripcion(prod, l)}  [{l.metodo}]")
 

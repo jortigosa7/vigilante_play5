@@ -5,7 +5,8 @@
     "reglas_packs: precio máximo de lo que sale de los listados = precio oficial de la consola + extra_por_juego_o_mando por cada juego o mando extra + el saldo que incluya.",
     "vendedor: solo cuenta si lo vende la propia tienda (no marketplace).",
     "experimental: true = si falla no te avisa (son URLs que hay que confirmar).",
-    "activo: false = no se vigila. Para añadir algo: copia un bloque, cambia la URL y pon activo: true."
+    "activo: false = no se vigila. Para añadir algo: copia un bloque, cambia la URL y pon activo: true.",
+    "cada_minutos: cada cuánto se revisa esa ficha o listado (0 = en cada pasada). cada_minutos_fichas: lo mismo para los packs que salen de un listado. Sirve para no saturar a las tiendas y que no te bloqueen."
   ],
   "reglas_packs": {
     "digital": 599.99,
@@ -61,7 +62,8 @@
       "url": "https://www.mediamarkt.es/es/product/_consola-sony-ps5-slim-digital-edition-825-gb-ssd-4k-1-mando-chasis-e-blanco-1605666.html",
       "precio_max": 599.99,
       "vendedor": "MediaMarkt",
-      "activo": true
+      "activo": true,
+      "cada_minutos": 6
     },
     {
       "tienda": "MediaMarkt",
@@ -69,7 +71,8 @@
       "url": "https://www.mediamarkt.es/es/product/_consola-sony-ps5-slim-standard-1-tb-ssd-4k-1-mando-chasis-e-blanco-1605665.html",
       "precio_max": 649.99,
       "vendedor": "MediaMarkt",
-      "activo": true
+      "activo": true,
+      "cada_minutos": 6
     },
     {
       "tienda": "MediaMarkt",
@@ -77,7 +80,8 @@
       "url": "https://www.mediamarkt.es/es/product/_consola-sony-ps5-slim-digital-edition-825-gb-ssd-4k-2-mandos-dualsense-chasis-e-blanco-1608844.html",
       "precio_max": 649.99,
       "vendedor": "MediaMarkt",
-      "activo": true
+      "activo": true,
+      "cada_minutos": 6
     },
     {
       "tienda": "MediaMarkt",
@@ -85,7 +89,8 @@
       "url": "https://www.mediamarkt.es/es/product/_consola-sony-ps5-slim-standard-1-tb-ssd-4k-2-mandos-dualsense-chasis-e-blanco-1608843.html",
       "precio_max": 699.99,
       "vendedor": "MediaMarkt",
-      "activo": true
+      "activo": true,
+      "cada_minutos": 6
     },
     {
       "tienda": "Sony (PlayStation Direct)",
@@ -131,28 +136,36 @@
       "vendedor": "PcComponentes",
       "max_productos": 25,
       "activo": true,
-      "experimental": true
+      "experimental": true,
+      "cada_minutos": 15,
+      "cada_minutos_fichas": 10
     },
     {
       "tienda": "MediaMarkt",
       "url": "https://www.mediamarkt.es/es/category/consolas-ps5-8431.html",
       "vendedor": "MediaMarkt",
       "max_productos": 25,
-      "activo": true
+      "activo": true,
+      "cada_minutos": 15,
+      "cada_minutos_fichas": 10
     },
     {
       "tienda": "Carrefour",
       "url": "https://www.carrefour.es/gaming/consolas-ps5/F-13riiZ1pt4/c",
       "vendedor": "Carrefour",
       "max_productos": 25,
-      "activo": true
+      "activo": true,
+      "cada_minutos": 15,
+      "cada_minutos_fichas": 10
     },
     {
       "tienda": "El Corte Inglés",
       "url": "https://www.elcorteingles.es/videojuegos/ps5/consolas/",
       "vendedor": "El Corte Inglés",
       "max_productos": 25,
-      "activo": true
+      "activo": true,
+      "cada_minutos": 15,
+      "cada_minutos_fichas": 10
     },
     {
       "tienda": "Worten",
@@ -160,7 +173,9 @@
       "vendedor": "Worten",
       "max_productos": 25,
       "experimental": true,
-      "activo": false
+      "activo": false,
+      "cada_minutos": 15,
+      "cada_minutos_fichas": 10
     },
     {
       "tienda": "Fnac",
@@ -168,7 +183,9 @@
       "vendedor": "Fnac",
       "max_productos": 25,
       "experimental": true,
-      "activo": false
+      "activo": false,
+      "cada_minutos": 15,
+      "cada_minutos_fichas": 10
     }
   ]
 }
