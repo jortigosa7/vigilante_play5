@@ -1093,8 +1093,15 @@ def mensaje_stock(prod: dict, l: Lectura) -> str:
         lineas.append(f"Ojo: {l.detalle}")
     if l.precio is None:
         lineas.append("No he podido leer el precio: compruébalo antes de pagar.")
+    lineas.append("Entra YA: suele durar minutos. Si al abrirla sale agotada, recarga 2-3 veces "
+                  "(la web va a saltos mientras reponen).")
     lineas.append(prod["url"])
     return "\n".join(lineas)
+
+
+def mensaje_agotada_otra_vez(prod: dict, minutos: Optional[float]) -> str:
+    duracion = f" (ha durado unos {max(1, round(minutos))} min)" if minutos is not None else ""
+    return f"🔴 Se ha vuelto a agotar: {prod['tienda']} · {prod['nombre']}{duracion}."
 
 
 def mensaje_cola(prod: dict) -> str:
@@ -1127,6 +1134,12 @@ def procesar_lectura(prod: dict, l: Lectura, estado: dict, avisar: Callable[...,
         ok = l.estado == EN_STOCK and (l.precio is None or l.precio <= precio_max + 0.005)
         if ok and not e.get("ok"):
             avisar(mensaje_stock(prod, l), titulo=f"PS5 en stock: {prod['tienda']}", url=prod["url"], urgente=True)
+            e["ok_desde"] = time.time()
+        elif e.get("ok") and not ok and l.estado == AGOTADO:
+            desde = e.pop("ok_desde", None)
+            minutos = (time.time() - desde) / 60 if desde else None
+            avisar(mensaje_agotada_otra_vez(prod, minutos), titulo=f"Agotada otra vez: {prod['tienda']}",
+                   url=prod["url"])
         e["ok"] = ok
         cola = l.estado == COLA
         if cola and not e.get("cola"):
@@ -1395,7 +1408,8 @@ def pasada(args, nav: Optional[Navegador], avisar=enviar_aviso, pausa=(1.5, 4.0)
                 productos.append(prod)
 
     # 2) Fichas (solo las que tocan en esta pasada)
-    pendientes = [p for p in productos if toca(p["url"], p.get("cada_minutos"))]
+    pendientes = [p for p in productos
+                  if toca(p["url"], p.get("cada_minutos")) or (estado.get(p["url"]) or {}).get("ok")]
     log(f"[{ahora_iso()}] Revisando {len(pendientes)} de {len(productos)} fichas")
     resultados = revisar_todos(pendientes, nav, pausa)
     if not args.probar:
