@@ -54,7 +54,7 @@ Edita `productos.json` (en GitHub: abre el archivo → icono del lápiz → *Com
 
 - `productos`: fichas concretas que se vigilan siempre. `precio_max` es el precio máximo al que te avisa.
 - `listados`: la página de consolas PS5 de cada tienda, de donde saca los packs. Para añadir otra tienda, copia un bloque, pega la URL de su página de consolas PS5 y ponle `activo: true`. Con `experimental: true` no te avisa si falla.
-- `reglas_packs`: precios oficiales y, en `valor_extras`, cuánto sumar por cada cosa que traiga el pack. Si quieres que también vigile la PS5 Pro, pon `incluir_pro: true`.
+- `reglas_packs`: precios oficiales y, en `valor_extras`, cuánto sumar por cada cosa que traiga el pack. `incluir_pro: true` (ya activado) vigila también la PS5 Pro a su precio oficial (899,99 €); ponlo en `false` si no la quieres.
 
 `activo: false` deja de vigilar cualquier bloque.
 

@@ -2,7 +2,7 @@
   "_ayuda": [
     "productos: fichas concretas que se vigilan siempre. precio_max = solo avisa si está en stock a ese precio o menos.",
     "listados: páginas de categoría de cada tienda. De ahí saca solo las consolas y packs (con juegos, mandos, saldo...) aunque sean nuevos.",
-    "reglas_packs: precio máximo de lo que sale de los listados = precio oficial de la consola + lo que vale cada extra según valor_extras (juego, mando, SSD por TB, auriculares, PS Portal, PS VR2...) + el saldo que incluya. Los packs con tele se ignoran. Baja o sube esos valores a tu gusto.",
+    "reglas_packs: precio máximo de lo que sale de los listados = precio oficial de la consola + lo que vale cada extra según valor_extras (juego, mando, SSD por TB, auriculares, PS Portal, PS VR2...) + el saldo que incluya. Los packs con tele se ignoran. Baja o sube esos valores a tu gusto. incluir_pro: true = también vigila la PS5 Pro (precio oficial en 'pro').",
     "vendedor: solo cuenta si lo vende la propia tienda (no marketplace).",
     "experimental: true = si falla no te avisa (son URLs que hay que confirmar).",
     "activo: false = no se vigila. Para añadir algo: copia un bloque, cambia la URL y pon activo: true.",
@@ -12,7 +12,7 @@
     "digital": 599.99,
     "lector": 649.99,
     "pro": 899.99,
-    "incluir_pro": false,
+    "incluir_pro": true,
     "valor_extras": {
       "juego": 80,
       "mando": 75,
@@ -85,6 +85,14 @@
       "activo": true
     },
     {
+      "tienda": "PcComponentes",
+      "nombre": "PS5 Pro",
+      "url": "https://www.pccomponentes.com/sony-playstation-5-pro",
+      "precio_max": 899.99,
+      "vendedor": "PcComponentes",
+      "activo": true
+    },
+    {
       "tienda": "MediaMarkt",
       "nombre": "PS5 Digital",
       "url": "https://www.mediamarkt.es/es/product/_consola-sony-ps5-slim-digital-edition-825-gb-ssd-4k-1-mando-chasis-e-blanco-1605666.html",
@@ -121,6 +129,15 @@
       "cada_minutos": 6
     },
     {
+      "tienda": "MediaMarkt",
+      "nombre": "PS5 Pro",
+      "url": "https://www.mediamarkt.es/es/product/_consola-sony-ps5-pro-2025-2-tb-ssd-4k-spectral-super-resolution-pssr-1-mando-digital-sin-lector-de-discos-blanco-1607133.html",
+      "precio_max": 899.99,
+      "vendedor": "MediaMarkt",
+      "activo": true,
+      "cada_minutos": 6
+    },
+    {
       "tienda": "Sony (PlayStation Direct)",
       "nombre": "PS5 Digital",
       "url": "https://direct.playstation.com/es-es/buy-consoles/playstation5-digital-edition-console-825-gb",
@@ -152,6 +169,15 @@
       "nombre": "PS5 con lector + 2 mandos",
       "url": "https://direct.playstation.com/es-es/buy-consoles/playstation5-console-1-tb-two-dualsense-wireless-controllers-bundle",
       "precio_max": 699.99,
+      "modo": "navegador",
+      "fuente": "texto",
+      "activo": true
+    },
+    {
+      "tienda": "Sony (PlayStation Direct)",
+      "nombre": "PS5 Pro",
+      "url": "https://www.playstation.com/es-es/ps5/ps5-pro/buy-now/",
+      "precio_max": 899.99,
       "modo": "navegador",
       "fuente": "texto",
       "activo": true
